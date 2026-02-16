@@ -30,8 +30,9 @@ func (l *Loop) RunRestartTicker(ctx context.Context, done chan<- struct{}) {
 			lastTick = l.timeNow()
 
 			status := l.GetStatus()
+			settings := l.GetSettings()
 			if status == constants.Running {
-				if err := l.updateFiles(ctx); err != nil {
+				if err := l.updateFiles(ctx, settings); err != nil {
 					l.statusManager.SetStatus(constants.Crashed)
 					l.logger.Error(err.Error())
 					l.logger.Warn("skipping DNS server restart due to failed files update")
@@ -44,7 +45,6 @@ func (l *Loop) RunRestartTicker(ctx context.Context, done chan<- struct{}) {
 			_, _ = l.statusManager.ApplyStatus(ctx, constants.Stopped)
 			_, _ = l.statusManager.ApplyStatus(ctx, constants.Running)
 
-			settings := l.GetSettings()
 			timer.Reset(*settings.UpdatePeriod)
 		case <-l.updateTicker:
 			if !timer.Stop() {
