@@ -215,6 +215,9 @@ func (c *Config) redirectPort(ctx context.Context, intf string,
 		interfaceFlag = ""
 	}
 
+	c.iptablesMutex.Lock()
+	defer c.iptablesMutex.Unlock()
+
 	err = c.runIptablesInstructions(ctx, []string{
 		fmt.Sprintf("-t nat %s PREROUTING %s -p tcp --dport %d -j REDIRECT --to-ports %d",
 			appendOrDelete(remove), interfaceFlag, sourcePort, destinationPort),

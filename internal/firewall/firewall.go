@@ -10,12 +10,11 @@ import (
 )
 
 type Config struct {
-	runner         CmdRunner
-	logger         Logger
-	iptablesMutex  sync.Mutex
-	ip6tablesMutex sync.Mutex
-	defaultRoutes  []routing.DefaultRoute
-	localNetworks  []routing.LocalNetwork
+	runner        CmdRunner
+	logger        Logger
+	iptablesMutex sync.Mutex
+	defaultRoutes []routing.DefaultRoute
+	localNetworks []routing.LocalNetwork
 
 	// Fixed state
 	ipTables        string
