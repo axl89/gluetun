@@ -64,7 +64,11 @@ func OpenVPNConfig(provider OpenVPNProviderSettings,
 	lines.add("suppress-timestamps")      // do not log timestamps, the Gluetun logger takes care of it
 	lines.add("dev", settings.Interface)
 	lines.add("verb", fmt.Sprint(*settings.Verbosity))
-	lines.add("proto", connection.Protocol)
+	protocol := connection.Protocol
+	if protocol == constants.TCP {
+		protocol = "tcp-client"
+	}
+	lines.add("proto", protocol)
 	lines.add("remote", connection.IP.String(), fmt.Sprint(connection.Port))
 
 	if *settings.User != "" {
