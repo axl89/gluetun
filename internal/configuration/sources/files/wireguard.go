@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"gopkg.in/ini.v1"
 )
@@ -86,10 +85,7 @@ func parseWireguardPeerSection(peerSection *ini.Section) (
 		host, port, err := net.SplitHostPort(*endpoint)
 		if err == nil {
 			endpointIP = &host
-			// IPv6 hosts contain colons; port is managed by the provider for those
-			if !strings.Contains(host, ":") {
-				endpointPort = &port
-			}
+			endpointPort = &port
 		} else {
 			endpointIP = endpoint
 		}
