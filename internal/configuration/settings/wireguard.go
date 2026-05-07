@@ -251,10 +251,12 @@ func (w *Wireguard) read(r *reader.Reader) (err error) {
 	// WARNING: do not initialize w.Addresses to an empty slice
 	// or the defaults for nordvpn will not work.
 	for _, addressString := range addressStrings {
-		if !strings.ContainsRune(addressString, '/') {
+		addressString = strings.TrimSpace(addressString)
+		if addressString == "" {
+			continue
+		} else if !strings.ContainsRune(addressString, '/') {
 			addressString += "/32"
 		}
-		addressString = strings.TrimSpace(addressString)
 		address, err := netip.ParsePrefix(addressString)
 		if err != nil {
 			return fmt.Errorf("parsing address: %w", err)
