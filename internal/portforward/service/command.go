@@ -18,7 +18,11 @@ func runCommand(ctx context.Context, cmder Cmder, logger Logger,
 	}
 	portsString := strings.Join(portStrings, ",")
 	commandString := strings.ReplaceAll(commandTemplate, "{{PORTS}}", portsString)
-	commandString = strings.ReplaceAll(commandString, "{{PORT}}", portStrings[0])
+	var firstPort string
+	if len(portStrings) > 0 {
+		firstPort = portStrings[0]
+	}
+	commandString = strings.ReplaceAll(commandString, "{{PORT}}", firstPort)
 	commandString = strings.ReplaceAll(commandString, "{{VPN_INTERFACE}}", vpnInterface)
 	args, err := command.Split(commandString)
 	if err != nil {
