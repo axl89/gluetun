@@ -48,3 +48,15 @@ func (f *Firewall) SetBaseChainsPolicy(_ context.Context, policy string) error {
 
 	return nil
 }
+
+// SetIPv4AllPolicies sets the policy of all base chains to ACCEPT or DROP.
+// In nftables with inet family, this also affects IPv6 rules.
+func (f *Firewall) SetIPv4AllPolicies(ctx context.Context, policy string) error {
+	return f.SetBaseChainsPolicy(ctx, policy)
+}
+
+// SetIPv6AllPolicies sets the policy of all base chains to ACCEPT or DROP.
+// In nftables with inet family, this also affects IPv4 rules.
+func (f *Firewall) SetIPv6AllPolicies(ctx context.Context, policy string) error {
+	return f.SetBaseChainsPolicy(ctx, policy)
+}

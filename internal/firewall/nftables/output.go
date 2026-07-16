@@ -3,9 +3,11 @@ package nftables
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
+	"github.com/qdm12/gluetun/internal/models"
 )
 
 func (f *Firewall) AcceptIpv6MulticastOutput(_ context.Context, intf string) error {
@@ -71,6 +73,579 @@ func (f *Firewall) AcceptIpv6MulticastOutput(_ context.Context, intf string) err
 
 	err = conn.Flush()
 	if err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
+func (f *Firewall) AcceptOutputTrafficToVPN(_ context.Context, defaultInterface string, 
+	connection models.Connection, remove bool) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	// Prepare the destination IP and port
+	const maxExprsLen = 7
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	// Interface filter
+	if defaultInterface != "" && defaultInterface != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(defaultInterface + "\x00")},
+		)
+	}
+
+	// Destination IP address
+	if connection.IP.Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       16, // IPv4 destination address offset
+				Len:          4, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     connection.IP.AsSlice(),
+			},
+		)
+	} else { // IPv6
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24, // IPv6 destination address offset
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     connection.IP.AsSlice(),
+			},
+		)
+	}
+
+	// Protocol (tcp or udp)
+	var protocolByte uint8
+	if connection.Protocol == "tcp" || connection.Protocol == "tcp-client" {
+		protocolByte = 6 // TCP
+	} else if connection.Protocol == "udp" {
+		protocolByte = 17 // UDP
+	} else {
+		return fmt.Errorf("unsupported protocol: %s", connection.Protocol)
+	}
+
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       3, // Protocol byte offset in IP header
+			Len:          1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{protocolByte},
+		},
+	)
+
+	// Destination port
+	portBytes := []byte{byte(connection.Port >> 8), byte(connection.Port)} //nolint:mnd
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2, // destination port offset
+			Len:          2, //nolint:mnd
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     portBytes,
+		},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
+func (f *Firewall) AcceptOutput(_ context.Context, protocol, intf string, ip netip.Addr, port uint16, remove bool) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	const maxExprsLen = 7
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	if intf != "" && intf != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
+		)
+	}
+
+	if ip.Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       16, //nolint:mnd
+				Len:          4, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     ip.AsSlice(),
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     ip.AsSlice(),
+			},
+		)
+	}
+
+	var protocolByte uint8
+	switch protocol {
+	case "tcp":
+		protocolByte = 6 //nolint:mnd
+	case "udp":
+		protocolByte = 17 //nolint:mnd
+	default:
+		return fmt.Errorf("unsupported protocol: %s", protocol)
+	}
+
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       3, //nolint:mnd
+			Len:          1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{protocolByte},
+		},
+	)
+
+	portBytes := []byte{byte(port >> 8), byte(port)} //nolint:mnd
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2, //nolint:mnd
+			Len:          2, //nolint:mnd
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     portBytes,
+		},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
+func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, intf string,
+	source, destination netip.AddrPort, remove bool,
+) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	const maxExprsLen = 10 //nolint:mnd
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	if intf != "" && intf != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
+		)
+	}
+
+	if source.Addr().Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       12, //nolint:mnd
+				Len:          4, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     source.Addr().AsSlice(),
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       8, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     source.Addr().AsSlice(),
+			},
+		)
+	}
+
+	if destination.Addr().Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       16, //nolint:mnd
+				Len:          4, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     destination.Addr().AsSlice(),
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     destination.Addr().AsSlice(),
+			},
+		)
+	}
+
+	var protocolByte uint8
+	switch protocol {
+	case "tcp":
+		protocolByte = 6 //nolint:mnd
+	case "udp":
+		protocolByte = 17 //nolint:mnd
+	default:
+		return fmt.Errorf("unsupported protocol: %s", protocol)
+	}
+
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       3, //nolint:mnd
+			Len:          1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{protocolByte},
+		},
+	)
+
+	sourcePortBytes := []byte{byte(source.Port() >> 8), byte(source.Port())} //nolint:mnd
+	destinationPortBytes := []byte{byte(destination.Port() >> 8), byte(destination.Port())} //nolint:mnd
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       0, //nolint:mnd
+			Len:          2, //nolint:mnd
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     sourcePortBytes,
+		},
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2, //nolint:mnd
+			Len:          2, //nolint:mnd
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     destinationPortBytes,
+		},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
+func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string, assignedIP netip.Addr,
+	subnet netip.Prefix, remove bool,
+) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	const maxExprsLen = 8
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	if intf != "" && intf != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
+		)
+	}
+
+	if assignedIP.Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       12, //nolint:mnd
+				Len:          4, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     assignedIP.AsSlice(),
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       8, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     assignedIP.AsSlice(),
+			},
+		)
+	}
+
+	if subnet.Addr().Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       16, //nolint:mnd
+				Len:          4, //nolint:mnd
+			},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            4, //nolint:mnd
+				Mask:           subnet.Masked().Addr().AsSlice(),
+				Xor:            []byte{0, 0, 0, 0}, //nolint:mnd
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            16, //nolint:mnd
+				Mask:           subnet.Masked().Addr().AsSlice(),
+				Xor:            []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, //nolint:mnd
+			},
+		)
+	}
+
+	exprs = append(exprs,
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
+func (f *Firewall) AcceptOutputThroughInterface(_ context.Context, intf string, remove bool) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	const maxExprsLen = 3
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	if intf != "" && intf != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
+		)
+	}
+
+	exprs = append(exprs,
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
 		return fmt.Errorf("flushing: %w", err)
 	}
 
