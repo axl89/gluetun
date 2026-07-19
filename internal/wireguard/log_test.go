@@ -3,7 +3,7 @@ package wireguard
 import (
 	"testing"
 
-	"github.com/golang/mock/gomock"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_makeDeviceLogger(t *testing.T) {
