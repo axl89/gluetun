@@ -68,7 +68,7 @@ jobs:
 
   verify-private:
     if: |
-      github.repository == 'qdm12/gluetun' &&
+      github.repository == 'passteque/gluetun' &&
       (
         github.event_name == 'push' ||
         github.event_name == 'release' ||
@@ -115,7 +115,7 @@ jobs:
 
   publish:
     if: |
-      github.repository == 'qdm12/gluetun' &&
+      github.repository == 'passteque/gluetun' &&
       (
         github.event_name == 'push' ||
         github.event_name == 'release' ||

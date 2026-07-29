@@ -38,7 +38,7 @@ jobs:
           config-file: .github/workflows/configs/mlc-config.json
 
       - uses: peter-evans/dockerhub-description@v4
-        if: github.repository == 'qdm12/gluetun' && github.event_name == 'push'
+        if: github.repository == 'passteque/gluetun' && github.event_name == 'push'
         with:
           username: qmcgaw
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
