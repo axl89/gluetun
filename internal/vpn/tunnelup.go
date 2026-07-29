@@ -31,6 +31,7 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 		}
 	}
 
+	<-l.healthDone // make sure the health checker is stopped before restarting it
 	icmpTargetIPs := l.healthSettings.ICMPTargetIPs
 	if len(icmpTargetIPs) == 1 && icmpTargetIPs[0].IsUnspecified() {
 		icmpTargetIPs = []netip.Addr{data.serverIP}
@@ -54,7 +55,12 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 	// Start collecting health errors asynchronously, since
 	// we should not wait for the code below to complete
 	// to start monitoring health and auto-healing.
-	go l.collectHealthErrors(ctx, loopCtx, healthErrCh)
+	// We keep track of when this goroutine is done with the healthDone
+	// channel to avoid a race condition where the health checker is stopped
+	// after being reconfigured and restarted, instead of before.
+	healthDone := make(chan struct{})
+	l.healthDone = healthDone
+	go l.collectHealthErrors(ctx, loopCtx, healthDone, healthErrCh)
 
 	if *l.dnsLooper.GetSettings().ServerEnabled {
 		_, _ = l.dnsLooper.ApplyStatus(ctx, constants.Running)
@@ -86,7 +92,10 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 	}
 }
 
-func (l *Loop) collectHealthErrors(ctx, loopCtx context.Context, healthErrCh <-chan error) {
+func (l *Loop) collectHealthErrors(ctx, loopCtx context.Context,
+	done chan<- struct{}, healthErrCh <-chan error,
+) {
+	defer close(done)
 	var previousHealthErr error
 	for {
 		select {

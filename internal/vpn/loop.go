@@ -43,6 +43,7 @@ type Loop struct {
 	start       <-chan struct{}
 	running     chan<- models.LoopStatus
 	userTrigger bool
+	healthDone  <-chan struct{}
 	// Internal constant values
 	backoffTime time.Duration
 }
@@ -67,6 +68,11 @@ func NewLoop(vpnSettings settings.VPN, ipv6Supported bool, vpnInputPorts []uint1
 
 	statusManager := loopstate.New(constants.Stopped, start, running, stop, stopped)
 	state := state.New(statusManager, vpnSettings)
+
+	// Initialize healthDone channel to a closed channel so that the first time
+	// we call <-l.healthDone it does not block
+	healthDone := make(chan struct{})
+	close(healthDone)
 
 	return &Loop{
 		statusManager:  statusManager,
@@ -95,6 +101,7 @@ func NewLoop(vpnSettings settings.VPN, ipv6Supported bool, vpnInputPorts []uint1
 		stop:           stop,
 		stopped:        stopped,
 		userTrigger:    true,
+		healthDone:     healthDone,
 		backoffTime:    defaultBackoffTime,
 	}
 }
