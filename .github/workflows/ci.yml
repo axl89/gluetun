@@ -127,6 +127,7 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
+    environment: secrets
     steps:
       - uses: actions/checkout@v6
 
@@ -161,7 +162,7 @@ jobs:
         with:
           registry: ghcr.io
           username: qdm12
-          password: ${{ github.token }}
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Short commit
         id: shortcommit
