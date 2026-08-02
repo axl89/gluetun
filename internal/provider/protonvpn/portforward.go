@@ -6,12 +6,33 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/qdm12/gluetun/internal/natpmp"
 	"github.com/qdm12/gluetun/internal/provider/utils"
 )
+
+// debugPortMismatchTriggerCycles is read from the environment variable
+// DEBUG_EXTERNAL_PORT_MISMATCH_CYCLES. If set to a value > 0, the port
+// forwarding maintain loop will trigger a synthetic external port mismatch
+// error after the specified number of successful maintain cycles.
+// This is only used for testing/debugging purposes.
+//
+//nolint:gochecknoglobals // env var read once at init for debug-only synthetic trigger
+var debugPortMismatchTriggerCycles = func() uint {
+	value := os.Getenv("DEBUG_EXTERNAL_PORT_MISMATCH_CYCLES")
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseUint(value, 10, 16)
+	if err != nil || parsed == 0 {
+		return 0
+	}
+	return uint(parsed)
+}()
 
 // PortForward obtains a VPN server side port forwarded from ProtonVPN gateway.
 func (p *Provider) PortForward(ctx context.Context, objects utils.PortForwardObjects) (
@@ -126,6 +147,7 @@ func (p *Provider) KeepPortForward(ctx context.Context,
 	const refreshTimeout = 45 * time.Second
 	timer := time.NewTimer(refreshTimeout)
 	logger := objects.Logger
+	maintainCycles := uint(0)
 	for {
 		select {
 		case <-ctx.Done():
@@ -134,6 +156,20 @@ func (p *Provider) KeepPortForward(ctx context.Context,
 		}
 
 		objects.Logger.Debug("refreshing forwarded ports since 45 seconds have elapsed")
+
+		// DEBUG: trigger synthetic port mismatch after N maintain cycles.
+		if debugPortMismatchTriggerCycles > 0 {
+			maintainCycles++
+			if maintainCycles == debugPortMismatchTriggerCycles {
+				fakeExternalPort := uint16(65535) //nolint:mnd // arbitrary port to trigger mismatch error
+				objects.Logger.Error(fmt.Sprintf(
+					"DEBUG: triggering synthetic external port mismatch after %d maintain cycles",
+					maintainCycles))
+				return fmt.Errorf("refreshing port mapping: TCP external port requested as %d but received %d",
+					uint16(1), fakeExternalPort)
+			}
+		}
+
 		const lifetime = 60 * time.Second
 		for internalPort, externalPort := range p.internalToExternalPorts {
 			_, _, err := addPortMappingTCPUDP(ctx, client, logger, objects.Gateway, internalPort, externalPort, lifetime)
