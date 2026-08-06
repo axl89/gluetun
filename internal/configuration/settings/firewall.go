@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 
+	"github.com/qdm12/gluetun/internal/configuration/settings/helpers"
 	"github.com/qdm12/gosettings"
 	"github.com/qdm12/gosettings/reader"
 	"github.com/qdm12/gotree"
@@ -16,6 +17,7 @@ type Firewall struct {
 	OutboundSubnets []netip.Prefix
 	Enabled         *bool
 	Debug           *bool
+	Implementation  string
 }
 
 func (f Firewall) validate() (err error) {
@@ -31,6 +33,10 @@ func (f Firewall) validate() (err error) {
 		if subnet.Addr().IsUnspecified() {
 			return fmt.Errorf("%w: %s", ErrFirewallPublicOutboundSubnet, subnet)
 		}
+	}
+
+	if !helpers.IsOneOf(f.Implementation, "iptables", "nftables") {
+		return fmt.Errorf("firewall implementation %q must be either 'iptables' or 'nftables'", f.Implementation)
 	}
 
 	return nil
@@ -52,6 +58,7 @@ func (f *Firewall) copy() (copied Firewall) {
 		OutboundSubnets: gosettings.CopySlice(f.OutboundSubnets),
 		Enabled:         gosettings.CopyPointer(f.Enabled),
 		Debug:           gosettings.CopyPointer(f.Debug),
+		Implementation:  f.Implementation,
 	}
 }
 
@@ -64,11 +71,13 @@ func (f *Firewall) overrideWith(other Firewall) {
 	f.OutboundSubnets = gosettings.OverrideWithSlice(f.OutboundSubnets, other.OutboundSubnets)
 	f.Enabled = gosettings.OverrideWithPointer(f.Enabled, other.Enabled)
 	f.Debug = gosettings.OverrideWithPointer(f.Debug, other.Debug)
+	f.Implementation = gosettings.OverrideWithComparable(f.Implementation, other.Implementation)
 }
 
 func (f *Firewall) setDefaults() {
 	f.Enabled = gosettings.DefaultPointer(f.Enabled, true)
 	f.Debug = gosettings.DefaultPointer(f.Debug, false)
+	f.Implementation = gosettings.DefaultComparable(f.Implementation, "iptables")
 }
 
 func (f Firewall) String() string {
@@ -82,6 +91,8 @@ func (f Firewall) toLinesNode() (node *gotree.Node) {
 	if !*f.Enabled {
 		return node
 	}
+
+	node.Appendf("Implementation: %s", f.Implementation)
 
 	if *f.Debug {
 		node.Appendf("Debug mode: on")
@@ -137,6 +148,8 @@ func (f *Firewall) read(r *reader.Reader) (err error) {
 	if err != nil {
 		return err
 	}
+
+	f.Implementation = r.String("FIREWALL_IMPLEMENTATION")
 
 	return nil
 }
