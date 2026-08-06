@@ -2,7 +2,6 @@ package provider
 
 import (
 	"fmt"
-	"math/rand"
 	"net/http"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/qdm12/gluetun/internal/provider/ivpn"
 	"github.com/qdm12/gluetun/internal/provider/mullvad"
 	"github.com/qdm12/gluetun/internal/provider/nordvpn"
-	"github.com/qdm12/gluetun/internal/provider/perfectprivacy"
 	"github.com/qdm12/gluetun/internal/provider/privado"
 	"github.com/qdm12/gluetun/internal/provider/privateinternetaccess"
 	"github.com/qdm12/gluetun/internal/provider/privatevpn"
@@ -55,34 +53,31 @@ func NewProviders(storage Storage, timeNow func() time.Time,
 	parallelResolver common.ParallelResolver, ipFetcher common.IPFetcher,
 	extractor custom.Extractor, credentials settings.Updater,
 ) *Providers {
-	randSource := rand.NewSource(timeNow().UnixNano())
-
 	//nolint:lll
 	providerNameToProvider := map[string]Provider{
-		providers.Airvpn:                airvpn.New(storage, randSource, client),
+		providers.Airvpn:                airvpn.New(storage, client),
 		providers.Custom:                custom.New(extractor),
-		providers.Cyberghost:            cyberghost.New(storage, randSource, updaterWarner, parallelResolver),
-		providers.Expressvpn:            expressvpn.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.Fastestvpn:            fastestvpn.New(storage, randSource, client, updaterWarner, parallelResolver),
-		providers.Giganews:              giganews.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.HideMyAss:             hidemyass.New(storage, randSource, client, updaterWarner, parallelResolver),
-		providers.Ipvanish:              ipvanish.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.Ivpn:                  ivpn.New(storage, randSource, client, updaterWarner, parallelResolver),
-		providers.Mullvad:               mullvad.New(storage, randSource, client),
-		providers.Nordvpn:               nordvpn.New(storage, randSource, client, updaterWarner),
-		providers.Perfectprivacy:        perfectprivacy.New(storage, randSource, unzipper, updaterWarner),
-		providers.Privado:               privado.New(storage, randSource, client, updaterWarner),
-		providers.PrivateInternetAccess: privateinternetaccess.New(storage, randSource, timeNow, client),
-		providers.Privatevpn:            privatevpn.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.Protonvpn:             protonvpn.New(storage, randSource, client, updaterWarner, *credentials.ProtonEmail, *credentials.ProtonPassword),
-		providers.Purevpn:               purevpn.New(storage, randSource, ipFetcher, unzipper, updaterWarner, parallelResolver),
-		providers.SlickVPN:              slickvpn.New(storage, randSource, client, updaterWarner, parallelResolver),
-		providers.Surfshark:             surfshark.New(storage, randSource, client, unzipper, updaterWarner, parallelResolver),
-		providers.Torguard:              torguard.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.VPNSecure:             vpnsecure.New(storage, randSource, client, updaterWarner, parallelResolver),
-		providers.VPNUnlimited:          vpnunlimited.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.Vyprvpn:               vyprvpn.New(storage, randSource, unzipper, updaterWarner, parallelResolver),
-		providers.Windscribe:            windscribe.New(storage, randSource, client, updaterWarner),
+		providers.Cyberghost:            cyberghost.New(storage, updaterWarner, parallelResolver),
+		providers.Expressvpn:            expressvpn.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.Fastestvpn:            fastestvpn.New(storage, client, updaterWarner, parallelResolver),
+		providers.Giganews:              giganews.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.HideMyAss:             hidemyass.New(storage, client, updaterWarner, parallelResolver),
+		providers.Ipvanish:              ipvanish.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.Ivpn:                  ivpn.New(storage, client, updaterWarner, parallelResolver),
+		providers.Mullvad:               mullvad.New(storage, client),
+		providers.Nordvpn:               nordvpn.New(storage, client, updaterWarner),
+		providers.Privado:               privado.New(storage, client, updaterWarner),
+		providers.PrivateInternetAccess: privateinternetaccess.New(storage, timeNow, client),
+		providers.Privatevpn:            privatevpn.New(storage, client, updaterWarner, parallelResolver),
+		providers.Protonvpn:             protonvpn.New(storage, client, updaterWarner, *credentials.ProtonEmail, *credentials.ProtonPassword),
+		providers.Purevpn:               purevpn.New(storage, ipFetcher, unzipper, updaterWarner, parallelResolver),
+		providers.SlickVPN:              slickvpn.New(storage, client, updaterWarner, parallelResolver),
+		providers.Surfshark:             surfshark.New(storage, client, unzipper, updaterWarner, parallelResolver),
+		providers.Torguard:              torguard.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.VPNSecure:             vpnsecure.New(storage, client, updaterWarner, parallelResolver),
+		providers.VPNUnlimited:          vpnunlimited.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.Vyprvpn:               vyprvpn.New(storage, unzipper, updaterWarner, parallelResolver),
+		providers.Windscribe:            windscribe.New(storage, client, updaterWarner),
 	}
 
 	targetLength := len(providers.AllWithCustom())

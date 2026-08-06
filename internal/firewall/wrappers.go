@@ -19,3 +19,16 @@ func (c *Config) TempDropOutputTCPRST(ctx context.Context,
 ) {
 	return c.impl.TempDropOutputTCPRST(ctx, src, dst, excludeMark)
 }
+
+func (c *Config) AcceptOutput(ctx context.Context, protocol, intf string,
+	ip netip.Addr, port uint16, remove bool,
+) error {
+	return c.impl.AcceptOutput(ctx, protocol, intf, ip, port, remove)
+}
+
+func (c *Config) AcceptOutputFromIPPortToIPPort(ctx context.Context,
+	protocol, intf string, source, destination netip.AddrPort, remove bool,
+) error {
+	return c.impl.AcceptOutputFromIPPortToIPPort(ctx, protocol, intf,
+		source, destination, remove)
+}

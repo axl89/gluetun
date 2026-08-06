@@ -1,7 +1,6 @@
 package mod
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,15 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var (
-	ErrModuleInfoNotFound = errors.New("module info not found")
-	ErrCircularDependency = errors.New("circular dependency")
-)
-
 func initDependencies(path string, modulesInfo map[string]moduleInfo) (err error) {
 	info, ok := modulesInfo[path]
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrModuleInfoNotFound, path)
+		return fmt.Errorf("module info not found: %s", path)
 	}
 
 	switch info.state {
@@ -30,8 +24,7 @@ func initDependencies(path string, modulesInfo map[string]moduleInfo) (err error
 	case loaded, builtin:
 		return nil
 	case loading:
-		return fmt.Errorf("%w: %s is already in the loading state",
-			ErrCircularDependency, path)
+		return fmt.Errorf("circular dependency: %s is already in the loading state", path)
 	}
 
 	info.state = loading
@@ -74,7 +67,7 @@ func initModule(path string) (err error) {
 	default:
 		const moduleParams = ""
 		const flags = 0
-		err = unix.FinitModule(int(file.Fd()), moduleParams, flags)
+		err = unix.FinitModule(int(file.Fd()), moduleParams, flags) //nolint:gosec
 		switch {
 		case err == nil, err == unix.EEXIST: //nolint:err113
 			return nil

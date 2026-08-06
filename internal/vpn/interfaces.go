@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os/exec"
 
+	"github.com/qdm12/gluetun/internal/command"
 	"github.com/qdm12/gluetun/internal/configuration/settings"
 	"github.com/qdm12/gluetun/internal/models"
 	"github.com/qdm12/gluetun/internal/netlink"
@@ -23,7 +24,7 @@ type Firewall interface {
 
 type Routing interface {
 	VPNLocalGatewayIP(vpnInterface string) (gateway netip.Addr, err error)
-	VPNRoute(vpnIntf string) (route netlink.Route, err error)
+	VPNRoutes(vpnIntf string) (route []netlink.Route, err error)
 }
 
 type PortForward interface {
@@ -44,14 +45,12 @@ type Provider interface {
 	GetConnection(selection settings.ServerSelection, ipv6Supported bool) (connection models.Connection, err error)
 	OpenVPNConfig(connection models.Connection, settings settings.OpenVPN, ipv6Supported bool) (lines []string)
 	Name() string
-	FetchServers(ctx context.Context, minServers int) (
-		servers []models.Server, err error)
 }
 
 type PortForwarder interface {
 	Name() string
 	PortForward(ctx context.Context, objects utils.PortForwardObjects) (
-		ports []uint16, err error)
+		internalToExternalPorts map[uint16]uint16, err error)
 	KeepPortForward(ctx context.Context, objects utils.PortForwardObjects) (err error)
 }
 
@@ -60,6 +59,7 @@ type Storage interface {
 }
 
 type NetLinker interface {
+	AddrList(linkIndex uint32, family uint8) (addresses []netip.Prefix, err error)
 	AddrReplace(linkIndex uint32, addr netip.Prefix) error
 	Router
 	Ruler
@@ -99,10 +99,12 @@ type PublicIPLoop interface {
 	ClearData() (err error)
 }
 
-type CmdStarter interface {
+type Cmder interface {
 	Start(cmd *exec.Cmd) (
 		stdoutLines, stderrLines <-chan string,
 		waitError <-chan error, startErr error)
+	RunAndLog(ctx context.Context, command string,
+		logger command.Logger) (err error)
 }
 
 type HealthChecker interface {
@@ -114,4 +116,9 @@ type HealthChecker interface {
 
 type HealthServer interface {
 	SetError(err error)
+}
+
+type Service interface {
+	Start() (runError <-chan error, err error)
+	Stop() error
 }

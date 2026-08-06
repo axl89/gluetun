@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/qdm12/gluetun/internal/healthcheck/dns"
@@ -24,7 +23,6 @@ type Checker struct {
 	icmpTargetIPs  []netip.Addr
 	smallCheckType string
 	startupOnFail  bool
-	configMutex    sync.Mutex
 
 	icmpNotPermitted *bool
 
@@ -55,8 +53,6 @@ func NewChecker(logger Logger) *Checker {
 func (c *Checker) SetConfig(tlsDialAddrs []string, icmpTargets []netip.Addr,
 	smallCheckType string, startupOnFail bool,
 ) {
-	c.configMutex.Lock()
-	defer c.configMutex.Unlock()
 	c.tlsDialAddrs = tlsDialAddrs
 	c.icmpTargetIPs = icmpTargets
 	c.smallCheckType = smallCheckType
@@ -166,10 +162,8 @@ func (c *Checker) Stop() error {
 }
 
 func (c *Checker) smallPeriodicCheck(ctx context.Context) error {
-	c.configMutex.Lock()
 	icmpTargetIPs := make([]netip.Addr, len(c.icmpTargetIPs))
 	copy(icmpTargetIPs, c.icmpTargetIPs)
-	c.configMutex.Unlock()
 	tryTimeouts := []time.Duration{
 		5 * time.Second,
 		5 * time.Second,
@@ -266,8 +260,6 @@ func makeAddressToDial(address string) (addressToDial string, err error) {
 	return address, nil
 }
 
-var ErrAllCheckTriesFailed = errors.New("all check tries failed")
-
 func withRetries(ctx context.Context, tryTimeouts []time.Duration,
 	logger Logger, checkName string, check func(ctx context.Context, try int) error,
 ) error {
@@ -297,7 +289,7 @@ func withRetries(ctx context.Context, tryTimeouts []time.Duration,
 	for i, err := range errs {
 		errStrings[i] = fmt.Sprintf("attempt %d (%dms): %s", i+1, err.durationMS, err.err)
 	}
-	return fmt.Errorf("%w:\n\t%s", ErrAllCheckTriesFailed, strings.Join(errStrings, "\n\t"))
+	return fmt.Errorf("all check tries failed:\n\t%s", strings.Join(errStrings, "\n\t"))
 }
 
 func (c *Checker) startupCheck(ctx context.Context) error {
@@ -342,7 +334,7 @@ func (c *Checker) startupCheck(ctx context.Context) error {
 	for i, err := range errs {
 		errStrings[i] = fmt.Sprintf("parallel attempt %d/%d failed: %s", i+1, len(errs), err)
 	}
-	return fmt.Errorf("%w: %s", ErrAllCheckTriesFailed, strings.Join(errStrings, ", "))
+	return fmt.Errorf("all check tries failed: %s", strings.Join(errStrings, ", "))
 }
 
 const (

@@ -47,7 +47,7 @@ func (e *echoip) FetchInfo(ctx context.Context, ip netip.Addr) (
 ) {
 	// Define a timeout since the default client has a large timeout and we don't
 	// want to wait too long.
-	const timeout = 5 * time.Second
+	const timeout = 15 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -70,11 +70,9 @@ func (e *echoip) FetchInfo(ctx context.Context, ip netip.Addr) (
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusTooManyRequests:
-		return result, fmt.Errorf("%w from %s: %s",
-			ErrTooManyRequests, url, response.Status)
+		return result, fmt.Errorf("%w from %s: %s", ErrTooManyRequests, url, response.Status)
 	default:
-		return result, fmt.Errorf("%w from %s: %s",
-			ErrBadHTTPStatus, url, response.Status)
+		return result, fmt.Errorf("bad HTTP status received from %s: %s", url, response.Status)
 	}
 
 	decoder := json.NewDecoder(response.Body)

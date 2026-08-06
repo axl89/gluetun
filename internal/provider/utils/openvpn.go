@@ -62,9 +62,14 @@ func OpenVPNConfig(provider OpenVPNProviderSettings,
 	lines.add("mute-replay-warnings")     // these are often ignored by some VPN providers
 	lines.add("auth-retry", "nointeract") // retry authenticating without interaction
 	lines.add("suppress-timestamps")      // do not log timestamps, the Gluetun logger takes care of it
+	lines.add("hand-window", "20")        // default is 60 seconds which is too long
 	lines.add("dev", settings.Interface)
 	lines.add("verb", fmt.Sprint(*settings.Verbosity))
-	lines.add("proto", connection.Protocol)
+	protocol := connection.Protocol
+	if protocol == constants.TCP {
+		protocol = "tcp-client"
+	}
+	lines.add("proto", protocol)
 	lines.add("remote", connection.IP.String(), fmt.Sprint(connection.Port))
 
 	if *settings.User != "" {
@@ -175,8 +180,8 @@ func OpenVPNConfig(provider OpenVPNProviderSettings,
 		lines.add("setenv", envKey, envValue)
 	}
 
-	for _, ca := range provider.CAs {
-		lines.addLines(WrapOpenvpnCA(ca))
+	if len(provider.CAs) > 0 {
+		lines.addLines(WrapOpenvpnCAs(provider.CAs))
 	}
 	if provider.CRLVerify != "" {
 		lines.addLines(WrapOpenvpnCRLVerify(provider.CRLVerify))
@@ -268,13 +273,20 @@ func defaultStringSlice(value, defaultValue []string) (
 }
 
 func WrapOpenvpnCA(certificate string) (lines []string) {
-	return []string{
-		"<ca>",
-		"-----BEGIN CERTIFICATE-----",
-		certificate,
-		"-----END CERTIFICATE-----",
-		"</ca>",
+	return WrapOpenvpnCAs([]string{certificate})
+}
+
+func WrapOpenvpnCAs(certificates []string) (lines []string) {
+	lines = append(lines, "<ca>")
+	for _, certificate := range certificates {
+		lines = append(lines,
+			"-----BEGIN CERTIFICATE-----",
+			certificate,
+			"-----END CERTIFICATE-----",
+		)
 	}
+	lines = append(lines, "</ca>")
+	return lines
 }
 
 func WrapOpenvpnCert(clientCertificate string) (lines []string) {

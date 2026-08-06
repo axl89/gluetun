@@ -2,7 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 )
 
@@ -49,4 +53,37 @@ func (s *Service) GetPortsForwarded() (ports []uint16) {
 	ports = make([]uint16, len(s.ports))
 	copy(ports, s.ports)
 	return ports
+}
+
+func (s *Service) SetPortsForwarded(ctx context.Context, ports []uint16) (err error) {
+	s.startStopMutex.Lock()
+	defer s.startStopMutex.Unlock()
+	s.portMutex.Lock()
+	defer s.portMutex.Unlock()
+
+	hasPortForwardingCodeRunning := !strings.HasSuffix(s.settings.PortForwarder.Name(), "[not supported]")
+	if hasPortForwardingCodeRunning {
+		return errors.New("setting port forwarded at runtime is not supported with internally running port forwarding code")
+	}
+
+	slices.Sort(ports)
+	if slices.Equal(s.ports, ports) {
+		return nil
+	}
+
+	err = s.cleanup()
+	if err != nil {
+		return fmt.Errorf("cleaning up: %w", err)
+	}
+
+	internalToExternalPorts := make(map[uint16]uint16, len(ports))
+	for _, port := range ports {
+		internalToExternalPorts[port] = port
+	}
+	err = s.onNewPorts(ctx, internalToExternalPorts)
+	if err != nil {
+		return fmt.Errorf("handling new ports: %w", err)
+	}
+
+	return nil
 }

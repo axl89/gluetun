@@ -35,16 +35,16 @@ type Config struct {
 
 // NewConfig creates a new Config instance and returns an error
 // if no firewall implementation is available.
-func NewConfig(ctx context.Context, implementation string, logger Logger,
-	runner CmdRunner, defaultRoutes []routing.DefaultRoute,
-	localNetworks []routing.LocalNetwork,
+func NewConfig(ctx context.Context, implementation string,
+	logger, iptablesLogger Logger, runner CmdRunner,
+	defaultRoutes []routing.DefaultRoute, localNetworks []routing.LocalNetwork,
 ) (config *Config, err error) {
 	var impl firewallImpl
 	var customRulesPath string
 	// TODO after v3.42 release, use nftables if [nftables.IsSupported] is true.
 	switch implementation {
 	case "auto", "iptables":
-		impl, err = iptables.New(ctx, runner, logger)
+		impl, err = iptables.New(ctx, runner, iptablesLogger)
 		if err != nil {
 			return nil, fmt.Errorf("creating iptables firewall: %w", err)
 		}

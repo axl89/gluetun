@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -27,27 +28,29 @@ func (s *Service) Stop() (err error) {
 }
 
 func (s *Service) cleanup() (err error) {
-	s.portMutex.Lock()
-	defer s.portMutex.Unlock()
-
 	if s.settings.DownCommand != "" {
 		const downTimeout = 60 * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), downTimeout)
 		defer cancel()
-		err = runCommand(ctx, s.cmder, s.logger, s.settings.DownCommand, s.ports, s.settings.Interface)
+		logger := &loggerWithPrefix{
+			prefix: "down command: ",
+			logger: s.logger,
+		}
+		err = runCommand(ctx, s.cmder, logger, s.settings.DownCommand, s.ports, s.settings.Interface)
 		if err != nil {
 			err = fmt.Errorf("running down command: %w", err)
 			s.logger.Error(err.Error())
 		}
 	}
 
+	redirectionWasEnabled := !slices.Equal(s.settings.ListeningPorts, []uint16{0})
 	for _, port := range s.ports {
 		err = s.portAllower.RemoveAllowedPort(context.Background(), port)
 		if err != nil {
 			return fmt.Errorf("blocking previous port in firewall: %w", err)
 		}
 
-		if s.settings.ListeningPort != 0 {
+		if redirectionWasEnabled {
 			ctx := context.Background()
 			const listeningPort = 0 // 0 to clear the redirection
 			err = s.portAllower.RedirectPort(ctx, s.settings.Interface, port, listeningPort)

@@ -5,13 +5,13 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/qdm12/gluetun/internal/netlink"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
-func Test_Wireguard_addRoute(t *testing.T) {
+func Test_addRoute(t *testing.T) {
 	t.Parallel()
 
 	const linkIndex = 88
@@ -62,15 +62,11 @@ func Test_Wireguard_addRoute(t *testing.T) {
 			ctrl := gomock.NewController(t)
 
 			netLinker := NewMockNetLinker(ctrl)
-			wg := Wireguard{
-				netlink: netLinker,
-			}
-
 			netLinker.EXPECT().
 				RouteAdd(testCase.expectedRoute).
 				Return(testCase.routeAddErr)
 
-			err := wg.addRoute(linkIndex, testCase.dst, firewallMark)
+			err := addRoute(linkIndex, testCase.dst, firewallMark, netLinker)
 
 			if testCase.err != nil {
 				require.Error(t, err)

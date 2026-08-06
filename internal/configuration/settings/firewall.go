@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -16,28 +17,33 @@ type Firewall struct {
 	InputPorts      []uint16
 	OutboundSubnets []netip.Prefix
 	Enabled         *bool
-	Debug           *bool
 	Implementation  string
+	Iptables        Iptables
 }
 
 func (f Firewall) validate() (err error) {
 	if hasZeroPort(f.VPNInputPorts) {
-		return fmt.Errorf("VPN input ports: %w", ErrFirewallZeroPort)
+		return errors.New("VPN input ports: cannot have a zero port")
 	}
 
 	if hasZeroPort(f.InputPorts) {
-		return fmt.Errorf("input ports: %w", ErrFirewallZeroPort)
+		return errors.New("input ports: cannot have a zero port")
 	}
 
 	for _, subnet := range f.OutboundSubnets {
 		if subnet.Addr().IsUnspecified() {
-			return fmt.Errorf("%w: %s", ErrFirewallPublicOutboundSubnet, subnet)
+			return fmt.Errorf("outbound subnet has an unspecified address: %s", subnet)
 		}
 	}
 
 	err = validate.IsOneOf(f.Implementation, "auto", "iptables", "nftables")
 	if err != nil {
 		return fmt.Errorf("firewall implementation: %w", err)
+	}
+
+	err = f.Iptables.validate()
+	if err != nil {
+		return fmt.Errorf("iptables settings: %w", err)
 	}
 
 	return nil
@@ -58,8 +64,8 @@ func (f *Firewall) copy() (copied Firewall) {
 		InputPorts:      gosettings.CopySlice(f.InputPorts),
 		OutboundSubnets: gosettings.CopySlice(f.OutboundSubnets),
 		Enabled:         gosettings.CopyPointer(f.Enabled),
-		Debug:           gosettings.CopyPointer(f.Debug),
 		Implementation:  f.Implementation,
+		Iptables:        f.Iptables.copy(),
 	}
 }
 
@@ -71,14 +77,14 @@ func (f *Firewall) overrideWith(other Firewall) {
 	f.InputPorts = gosettings.OverrideWithSlice(f.InputPorts, other.InputPorts)
 	f.OutboundSubnets = gosettings.OverrideWithSlice(f.OutboundSubnets, other.OutboundSubnets)
 	f.Enabled = gosettings.OverrideWithPointer(f.Enabled, other.Enabled)
-	f.Debug = gosettings.OverrideWithPointer(f.Debug, other.Debug)
 	f.Implementation = gosettings.OverrideWithComparable(f.Implementation, other.Implementation)
+	f.Iptables.overrideWith(other.Iptables)
 }
 
-func (f *Firewall) setDefaults() {
+func (f *Firewall) setDefaults(globalLogLevel string) {
 	f.Enabled = gosettings.DefaultPointer(f.Enabled, true)
-	f.Debug = gosettings.DefaultPointer(f.Debug, false)
 	f.Implementation = gosettings.DefaultComparable(f.Implementation, "iptables")
+	f.Iptables.setDefaults(globalLogLevel)
 }
 
 func (f Firewall) String() string {
@@ -94,10 +100,7 @@ func (f Firewall) toLinesNode() (node *gotree.Node) {
 	}
 
 	node.Appendf("Implementation: %s", f.Implementation)
-
-	if *f.Debug {
-		node.Appendf("Debug mode: on")
-	}
+	node.AppendNode(f.Iptables.toLinesNode())
 
 	if len(f.VPNInputPorts) > 0 {
 		vpnInputPortsNode := node.Appendf("VPN input ports:")
@@ -145,9 +148,9 @@ func (f *Firewall) read(r *reader.Reader) (err error) {
 		return err
 	}
 
-	f.Debug, err = r.BoolPtr("FIREWALL_DEBUG")
+	err = f.Iptables.read(r)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading iptables settings: %w", err)
 	}
 
 	f.Implementation = r.String("FIREWALL_IMPLEMENTATION")

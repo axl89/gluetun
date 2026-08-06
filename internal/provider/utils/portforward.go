@@ -13,7 +13,7 @@ type PortForwardObjects struct {
 	// Gateway is the VPN gateway IP address, used by Private Internet Access
 	// and ProtonVPN.
 	Gateway netip.Addr
-	// InternalIP is the VPN internal IP address assigned, used by Perfect Privacy.
+	// InternalIP is the VPN internal IP address assigned, used by PrivateVPN.
 	InternalIP netip.Addr
 	// Client is used to query the VPN gateway for Private Internet Access.
 	Client *http.Client
@@ -25,6 +25,8 @@ type PortForwardObjects struct {
 	Username string
 	// Password is used by Private Internet Access for port forwarding.
 	Password string
+	// PortsCount is used by ProtonVPN for port forwarding.
+	PortsCount uint16
 }
 
 type Routing interface {

@@ -51,9 +51,6 @@ func Test_Settings_String(t *testing.T) {
 |           ├── [2606:4700:4700::1111]:443
 |           └── [2001:4860:4860::8888]:443
 ├── DNS settings:
-|   ├── Keep existing nameserver(s): no
-|   ├── DNS server address to use: 127.0.0.1
-|   ├── DNS forwarder server enabled: yes
 |   ├── Upstream resolver type: dot
 |   ├── Upstream resolvers:
 |   |   └── Cloudflare
@@ -62,13 +59,18 @@ func Test_Settings_String(t *testing.T) {
 |   ├── Update period: every 24h0m0s
 |   └── DNS filtering settings:
 |       ├── Block malicious: yes
-|       ├── Block ads: no
-|       └── Block surveillance: yes
+|       └── Block ads: no
 ├── Firewall settings:
 |   ├── Enabled: yes
-|   └── Implementation: iptables
+|   ├── Implementation: iptables
+|   └── Iptables settings:
+|       └── Log level: INFO
 ├── Log settings:
 |   └── Log level: INFO
+├── IPv6 settings:
+|   └── Check addresses:
+|       ├── [2001:4860:4860::8888]:53
+|       └── [2606:4700:4700::1111]:53
 ├── Health settings:
 |   ├── Server listening address: 127.0.0.1:9999
 |   ├── Target addresses:
@@ -79,6 +81,8 @@ func Test_Settings_String(t *testing.T) {
 |   |       ├── 1.1.1.1
 |   |       └── 8.8.8.8
 |   └── Restart VPN on healthcheck failure: yes
+├── SOCKS5 proxy server settings:
+|   └── Enabled: no
 ├── Shadowsocks server settings:
 |   └── Enabled: no
 ├── HTTP proxy settings:
@@ -88,7 +92,7 @@ func Test_Settings_String(t *testing.T) {
 |   ├── Logging: yes
 |   └── Authentication file path: /gluetun/auth/config.toml
 ├── Storage settings:
-|   └── Filepath: /gluetun/servers.json
+|   └── Servers directory path: /gluetun/servers/
 ├── OS Alpine settings:
 |   ├── Process UID: 1000
 |   └── Process GID: 1000

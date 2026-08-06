@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -13,20 +12,28 @@ import (
 	"github.com/qdm12/gotree"
 )
 
+const (
+	DNSUpstreamTypeDot   = "dot"
+	DNSUpstreamTypeDoh   = "doh"
+	DNSUpstreamTypePlain = "plain"
+)
+
 // DNS contains settings to configure DNS.
 type DNS struct {
-	// ServerEnabled is true if the server should be running
-	// and used. It defaults to true, and cannot be nil
-	// in the internal state.
-	ServerEnabled *bool
-	// UpstreamType can be dot or plain, and defaults to dot.
+	// ServerEnabled indicates if the DNS server should be enabled.
+	// It defaults to true and cannot be nil in the internal state.
+	ServerEnabled *bool `json:"enabled"`
+	// UpstreamType can be [DNSUpstreamTypeDot], [DNSUpstreamTypeDoh]
+	// or [DNSUpstreamTypePlain]. It defaults to [DNSUpstreamTypeDot].
 	UpstreamType string `json:"upstream_type"`
 	// UpdatePeriod is the period to update DNS block lists.
 	// It can be set to 0 to disable the update.
 	// It defaults to 24h and cannot be nil in
 	// the internal state.
 	UpdatePeriod *time.Duration
-	// Providers is a list of DNS providers
+	// Providers is a list of DNS providers.
+	// It defaults to ["cloudflare"] and is ignored if the UpstreamType is
+	// [DNSUpstreamTypePlain] and the UpstreamPlainAddresses field is set.
 	Providers []string `json:"providers"`
 	// Caching is true if the server should cache
 	// DNS responses.
@@ -36,48 +43,54 @@ type DNS struct {
 	// Blacklist contains settings to configure the filter
 	// block lists.
 	Blacklist DNSBlacklist
-	// ServerAddress is the DNS server to use inside
-	// the Go program and for the system.
-	// It defaults to '127.0.0.1' to be used with the
-	// local server. It cannot be the zero value in the internal
-	// state.
-	ServerAddress netip.Addr
-	// KeepNameserver is true if the existing DNS server
-	// found in /etc/resolv.conf should be used
-	// Note setting this to true will likely DNS traffic
-	// outside the VPN tunnel since it would go through
-	// the local DNS server of your Docker/Kubernetes
-	// configuration, which is likely not going through the tunnel.
-	// This will also disable the DNS forwarder server and the
-	// `ServerAddress` field will be ignored.
-	// It defaults to false and cannot be nil in the
-	// internal state.
-	KeepNameserver *bool
+	// UpstreamPlainAddresses are the upstream plaintext DNS resolver
+	// addresses to use by the built-in DNS server forwarder.
+	// Note, if the upstream type is [dnsUpstreamTypePlain] and this field is set,
+	// the Providers field is ignored.
+	UpstreamPlainAddresses []netip.AddrPort
 }
 
-var (
-	ErrDNSUpstreamTypeNotValid = errors.New("DNS upstream type is not valid")
-	ErrDNSUpdatePeriodTooShort = errors.New("update period is too short")
-)
-
 func (d DNS) validate() (err error) {
-	if !helpers.IsOneOf(d.UpstreamType, "dot", "doh", "plain") {
-		return fmt.Errorf("%w: %s", ErrDNSUpstreamTypeNotValid, d.UpstreamType)
+	if !helpers.IsOneOf(d.UpstreamType, DNSUpstreamTypeDot, DNSUpstreamTypeDoh, DNSUpstreamTypePlain) {
+		return fmt.Errorf("DNS upstream type is not valid: %s", d.UpstreamType)
 	}
 
-	const minUpdatePeriod = 30 * time.Second
-	if *d.UpdatePeriod != 0 && *d.UpdatePeriod < minUpdatePeriod {
-		return fmt.Errorf("%w: %s must be bigger than %s",
-			ErrDNSUpdatePeriodTooShort, *d.UpdatePeriod, minUpdatePeriod)
-	}
-
-	providers := provider.NewProviders()
-	for _, providerName := range d.Providers {
-		_, err := providers.Get(providerName)
+	if !*d.ServerEnabled {
+		err = d.validateForServerOff()
 		if err != nil {
 			return err
 		}
 	}
+
+	const minUpdatePeriod = 30 * time.Second
+	if *d.UpdatePeriod != 0 && *d.UpdatePeriod < minUpdatePeriod {
+		return fmt.Errorf("update period is too short: %s must be bigger than %s",
+			*d.UpdatePeriod, minUpdatePeriod)
+	}
+
+	if d.UpstreamType == DNSUpstreamTypePlain {
+		selectedHasPlainIPv4, selectedHasPlainIPv6 := false, false
+		for _, addrPort := range d.UpstreamPlainAddresses {
+			if !selectedHasPlainIPv4 && addrPort.Addr().Is4() {
+				selectedHasPlainIPv4 = true
+			}
+			if !selectedHasPlainIPv6 && addrPort.Addr().Is6() {
+				selectedHasPlainIPv6 = true
+			}
+			if selectedHasPlainIPv4 && selectedHasPlainIPv6 {
+				break
+			}
+		}
+		switch {
+		case *d.IPv6 && !selectedHasPlainIPv6:
+			return fmt.Errorf("upstream plain addresses do not contain any IPv6 address: "+
+				"in %d addresses", len(d.UpstreamPlainAddresses))
+		case !*d.IPv6 && !selectedHasPlainIPv4:
+			return fmt.Errorf("upstream plain addresses do not contain any IPv4 address: "+
+				"in %d addresses", len(d.UpstreamPlainAddresses))
+		}
+	}
+	// Note: all DNS built in providers have both IPv4 and IPv6 addresses for all modes
 
 	err = d.Blacklist.validate()
 	if err != nil {
@@ -87,17 +100,33 @@ func (d DNS) validate() (err error) {
 	return nil
 }
 
+func (d DNS) validateForServerOff() (err error) {
+	switch {
+	case d.UpstreamType != DNSUpstreamTypePlain:
+		return fmt.Errorf("upstream type %s must be %s if the built-in DNS server is disabled",
+			d.UpstreamType, DNSUpstreamTypePlain)
+	case len(d.UpstreamPlainAddresses) == 0:
+		return fmt.Errorf("if DNS is disabled, at least one upstream plain address must be set")
+	}
+	for _, addrPort := range d.UpstreamPlainAddresses {
+		const defaultDNSPort = 53
+		if addrPort.Port() != defaultDNSPort {
+			return fmt.Errorf("invalid DNS port in %s: must be %d", addrPort, defaultDNSPort)
+		}
+	}
+	return nil
+}
+
 func (d *DNS) Copy() (copied DNS) {
 	return DNS{
-		ServerEnabled:  gosettings.CopyPointer(d.ServerEnabled),
-		UpstreamType:   d.UpstreamType,
-		UpdatePeriod:   gosettings.CopyPointer(d.UpdatePeriod),
-		Providers:      gosettings.CopySlice(d.Providers),
-		Caching:        gosettings.CopyPointer(d.Caching),
-		IPv6:           gosettings.CopyPointer(d.IPv6),
-		Blacklist:      d.Blacklist.copy(),
-		ServerAddress:  d.ServerAddress,
-		KeepNameserver: gosettings.CopyPointer(d.KeepNameserver),
+		ServerEnabled:          gosettings.CopyPointer(d.ServerEnabled),
+		UpstreamType:           d.UpstreamType,
+		UpdatePeriod:           gosettings.CopyPointer(d.UpdatePeriod),
+		Providers:              gosettings.CopySlice(d.Providers),
+		Caching:                gosettings.CopyPointer(d.Caching),
+		IPv6:                   gosettings.CopyPointer(d.IPv6),
+		Blacklist:              d.Blacklist.copy(),
+		UpstreamPlainAddresses: gosettings.CopySlice(d.UpstreamPlainAddresses),
 	}
 }
 
@@ -112,41 +141,29 @@ func (d *DNS) overrideWith(other DNS) {
 	d.Caching = gosettings.OverrideWithPointer(d.Caching, other.Caching)
 	d.IPv6 = gosettings.OverrideWithPointer(d.IPv6, other.IPv6)
 	d.Blacklist.overrideWith(other.Blacklist)
-	d.ServerAddress = gosettings.OverrideWithValidator(d.ServerAddress, other.ServerAddress)
-	d.KeepNameserver = gosettings.OverrideWithPointer(d.KeepNameserver, other.KeepNameserver)
+	d.UpstreamPlainAddresses = gosettings.OverrideWithSlice(d.UpstreamPlainAddresses, other.UpstreamPlainAddresses)
 }
 
 func (d *DNS) setDefaults() {
 	d.ServerEnabled = gosettings.DefaultPointer(d.ServerEnabled, true)
-	d.UpstreamType = gosettings.DefaultComparable(d.UpstreamType, "dot")
+	defaultUpstreamType := DNSUpstreamTypeDot
+	if !*d.ServerEnabled {
+		defaultUpstreamType = DNSUpstreamTypePlain
+	}
+	d.UpstreamType = gosettings.DefaultComparable(d.UpstreamType, defaultUpstreamType)
 	const defaultUpdatePeriod = 24 * time.Hour
 	d.UpdatePeriod = gosettings.DefaultPointer(d.UpdatePeriod, defaultUpdatePeriod)
-	d.Providers = gosettings.DefaultSlice(d.Providers, []string{
-		provider.Cloudflare().Name,
-	})
+	d.UpstreamPlainAddresses = gosettings.DefaultSlice(d.UpstreamPlainAddresses, []netip.AddrPort{})
+	d.Providers = gosettings.DefaultSlice(d.Providers, defaultDNSProviders())
 	d.Caching = gosettings.DefaultPointer(d.Caching, true)
 	d.IPv6 = gosettings.DefaultPointer(d.IPv6, false)
 	d.Blacklist.setDefaults()
-	d.ServerAddress = gosettings.DefaultValidator(d.ServerAddress,
-		netip.AddrFrom4([4]byte{127, 0, 0, 1}))
-	d.KeepNameserver = gosettings.DefaultPointer(d.KeepNameserver, false)
 }
 
-func (d DNS) GetFirstPlaintextIPv4() (ipv4 netip.Addr) {
-	localhost := netip.AddrFrom4([4]byte{127, 0, 0, 1})
-	if d.ServerAddress.Compare(localhost) != 0 && d.ServerAddress.Is4() {
-		return d.ServerAddress
+func defaultDNSProviders() []string {
+	return []string{
+		provider.Cloudflare().Name,
 	}
-
-	providers := provider.NewProviders()
-	provider, err := providers.Get(d.Providers[0])
-	if err != nil {
-		// Settings should be validated before calling this function,
-		// so an error happening here is a programming error.
-		panic(err)
-	}
-
-	return provider.Plain.IPv4[0].Addr()
 }
 
 func (d DNS) String() string {
@@ -155,22 +172,33 @@ func (d DNS) String() string {
 
 func (d DNS) toLinesNode() (node *gotree.Node) {
 	node = gotree.New("DNS settings:")
-	node.Appendf("Keep existing nameserver(s): %s", gosettings.BoolToYesNo(d.KeepNameserver))
-	if *d.KeepNameserver {
-		return node
-	}
-	node.Appendf("DNS server address to use: %s", d.ServerAddress)
 
-	node.Appendf("DNS forwarder server enabled: %s", gosettings.BoolToYesNo(d.ServerEnabled))
 	if !*d.ServerEnabled {
+		plainServers := node.Append("Plain DNS servers to use directly:")
+		for _, addr := range d.UpstreamPlainAddresses {
+			plainServers.Append(addr.String())
+		}
 		return node
 	}
 
 	node.Appendf("Upstream resolver type: %s", d.UpstreamType)
 
 	upstreamResolvers := node.Append("Upstream resolvers:")
-	for _, provider := range d.Providers {
-		upstreamResolvers.Append(provider)
+	if len(d.UpstreamPlainAddresses) > 0 {
+		if d.UpstreamType == DNSUpstreamTypePlain {
+			for _, addr := range d.UpstreamPlainAddresses {
+				upstreamResolvers.Append(addr.String())
+			}
+		} else {
+			node.Appendf("Upstream plain addresses: ignored because upstream type is not plain")
+			for _, provider := range d.Providers {
+				upstreamResolvers.Append(provider)
+			}
+		}
+	} else {
+		for _, provider := range d.Providers {
+			upstreamResolvers.Append(provider)
+		}
 	}
 
 	node.Appendf("Caching: %s", gosettings.BoolToYesNo(d.Caching))
@@ -217,15 +245,42 @@ func (d *DNS) read(r *reader.Reader) (err error) {
 		return err
 	}
 
-	d.ServerAddress, err = r.NetipAddr("DNS_ADDRESS", reader.RetroKeys("DNS_PLAINTEXT_ADDRESS"))
+	err = d.readUpstreamPlainAddresses(r)
 	if err != nil {
 		return err
 	}
 
-	d.KeepNameserver, err = r.BoolPtr("DNS_KEEP_NAMESERVER")
+	return nil
+}
+
+func (d *DNS) readUpstreamPlainAddresses(r *reader.Reader) (err error) {
+	// If DNS_UPSTREAM_PLAIN_ADDRESSES is set, the user must also set DNS_UPSTREAM_RESOLVER_TYPE=plain
+	// for these to be used. This is an added safety measure to reduce misunderstandings, and
+	// reduce odd settings overrides.
+	d.UpstreamPlainAddresses, err = r.CSVNetipAddrPorts("DNS_UPSTREAM_PLAIN_ADDRESSES")
 	if err != nil {
 		return err
 	}
 
+	// Retro-compatibility - remove in v4
+	// If DNS_ADDRESS is set to a non-localhost address, append it to the other
+	// upstream plain addresses, assuming port 53, and force the upstream type to plain
+	// to maintain retro-compatibility behavior.
+	serverAddress, err := r.NetipAddr("DNS_ADDRESS",
+		reader.RetroKeys("DNS_PLAINTEXT_ADDRESS"),
+		reader.IsRetro("DNS_UPSTREAM_PLAIN_ADDRESSES"))
+	if err != nil {
+		return err
+	} else if !serverAddress.IsValid() {
+		return nil
+	}
+	isLocalhost := serverAddress.Compare(netip.AddrFrom4([4]byte{127, 0, 0, 1})) == 0
+	if isLocalhost {
+		return nil
+	}
+	const defaultPlainPort = 53
+	addrPort := netip.AddrPortFrom(serverAddress, defaultPlainPort)
+	d.UpstreamPlainAddresses = append(d.UpstreamPlainAddresses, addrPort)
+	d.UpstreamType = DNSUpstreamTypePlain
 	return nil
 }

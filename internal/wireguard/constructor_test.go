@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 
@@ -25,7 +26,7 @@ func Test_New(t *testing.T) {
 			settings: Settings{
 				PrivateKey: "",
 			},
-			err: ErrPrivateKeyMissing,
+			err: errors.New("private key is missing"),
 		},
 		"minimal valid settings": {
 			settings: Settings{
@@ -55,6 +56,7 @@ func Test_New(t *testing.T) {
 					MTU:            device.DefaultMTU,
 					IPv6:           ptr(false),
 					Implementation: "auto",
+					GSO:            ptr(true),
 				},
 			},
 		},
