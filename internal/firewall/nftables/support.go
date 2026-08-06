@@ -12,6 +12,7 @@ import (
 	"github.com/google/nftables"
 )
 
+// IsSupported returns true if nftables is supported on the system, false otherwise.
 func IsSupported() bool {
 	conn, err := nftables.New()
 	if err != nil {

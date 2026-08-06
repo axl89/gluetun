@@ -80,7 +80,7 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 	err = conn.Flush()
 	if err != nil && !isTableDoesNotExist(err) {
 		if !remove {
-			removeFailedRules(f.rules, rulesToDelete)
+			f.rules = removeFailedRules(f.rules, rulesToDelete)
 		}
 		return fmt.Errorf("redirecting source port %d to destination port %d on interface %s: %w",
 			sourcePort, destinationPort, intf, err)
@@ -157,10 +157,12 @@ func isTableDoesNotExist(err error) bool {
 	return strings.Contains(err.Error(), "Table does not exist")
 }
 
-func removeFailedRules(rules []*nftables.Rule, failed []*nftables.Rule) {
-	for i := len(rules) - 1; i >= 0; i-- {
-		if slices.Contains(failed, rules[i]) {
-			rules = append(rules[:i], rules[i+1:]...)
+func removeFailedRules(rules []*nftables.Rule, failed []*nftables.Rule) (succeeded []*nftables.Rule) {
+	succeeded = make([]*nftables.Rule, 0, len(rules)-len(failed))
+	for _, rule := range rules {
+		if !slices.Contains(failed, rule) {
+			succeeded = append(succeeded, rule)
 		}
 	}
+	return succeeded
 }

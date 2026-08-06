@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/qdm12/gluetun/internal/configuration/settings/helpers"
 	"github.com/qdm12/gosettings"
 	"github.com/qdm12/gosettings/reader"
+	"github.com/qdm12/gosettings/validate"
 	"github.com/qdm12/gotree"
 )
 
@@ -35,8 +35,9 @@ func (f Firewall) validate() (err error) {
 		}
 	}
 
-	if !helpers.IsOneOf(f.Implementation, "iptables", "nftables") {
-		return fmt.Errorf("firewall implementation %q must be either 'iptables' or 'nftables'", f.Implementation)
+	err = validate.IsOneOf(f.Implementation, "auto", "iptables", "nftables")
+	if err != nil {
+		return fmt.Errorf("firewall implementation: %w", err)
 	}
 
 	return nil

@@ -41,8 +41,9 @@ func NewConfig(ctx context.Context, implementation string, logger Logger,
 ) (config *Config, err error) {
 	var impl firewallImpl
 	var customRulesPath string
+	// TODO after v3.42 release, use nftables if [nftables.IsSupported] is true.
 	switch implementation {
-	case "iptables":
+	case "auto", "iptables":
 		impl, err = iptables.New(ctx, runner, logger)
 		if err != nil {
 			return nil, fmt.Errorf("creating iptables firewall: %w", err)
