@@ -42,8 +42,8 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
-	sourcePortBytes := []byte{byte(sourcePort >> 8), byte(sourcePort)}                //nolint:mnd
-	destinationPortBytes := []byte{byte(destinationPort >> 8), byte(destinationPort)} //nolint:mnd
+	sourcePortBytes := []byte{byte(sourcePort >> 8), byte(sourcePort)}                //nolint:mnd,gosec
+	destinationPortBytes := []byte{byte(destinationPort >> 8), byte(destinationPort)} //nolint:mnd,gosec
 	const tcp, udp uint8 = 6, 17                                                      //nolint:mnd
 	protocols := []uint8{tcp, udp}
 

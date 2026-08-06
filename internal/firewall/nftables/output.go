@@ -215,6 +215,126 @@ func (f *Firewall) AcceptOutputTrafficToVPN(_ context.Context, defaultInterface 
 	return nil
 }
 
+func (f *Firewall) AcceptOutput(_ context.Context, protocol, intf string,
+	ip netip.Addr, port uint16, remove bool,
+) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	table, _, _, outputChain := setupFilterWithBaseChains(conn)
+
+	const maxExprsLen = 7
+	exprs := make([]expr.Any, 0, maxExprsLen)
+
+	if intf != "" && intf != "*" {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
+		)
+	}
+
+	if ip.Is4() {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       16, //nolint:mnd
+				Len:          4,  //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     ip.AsSlice(),
+			},
+		)
+	} else {
+		exprs = append(exprs,
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24, //nolint:mnd
+				Len:          16, //nolint:mnd
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     ip.AsSlice(),
+			},
+		)
+	}
+
+	var protocolByte uint8
+	switch protocol {
+	case "tcp":
+		protocolByte = 6
+	case "udp":
+		protocolByte = 17
+	default:
+		return fmt.Errorf("unsupported protocol: %s", protocol)
+	}
+
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       3, //nolint:mnd
+			Len:          1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{protocolByte},
+		},
+	)
+
+	portBytes := []byte{byte(port >> 8), byte(port)} //nolint:mnd,gosec
+	exprs = append(exprs,
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2, //nolint:mnd
+			Len:          2, //nolint:mnd
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     portBytes,
+		},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+
+	rule := &nftables.Rule{
+		Table: table,
+		Chain: outputChain,
+		Exprs: exprs,
+	}
+
+	if !remove {
+		conn.AddRule(rule)
+		f.rules = append(f.rules, rule)
+	} else {
+		err = f.deleteRule(conn, rule)
+		if err != nil {
+			return fmt.Errorf("deleting rule: %w", err)
+		}
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		if !remove {
+			f.rules = f.rules[:len(f.rules)-1]
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	return nil
+}
+
 func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, intf string,
 	source, destination netip.AddrPort, remove bool,
 ) error {
@@ -228,7 +348,7 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 
 	table, _, _, outputChain := setupFilterWithBaseChains(conn)
 
-	const maxExprsLen = 10 //nolint:mnd
+	const maxExprsLen = 10
 	exprs := make([]expr.Any, 0, maxExprsLen)
 
 	if intf != "" && intf != "*" {
@@ -301,11 +421,11 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 	var protocolByte uint8
 	switch protocol {
 	case "tcp":
-		protocolByte = 6 //nolint:mnd
+		protocolByte = 6
 	case "udp":
-		protocolByte = 17 //nolint:mnd
+		protocolByte = 17
 	default:
-		return fmt.Errorf("unsupported protocol: %s", protocol) //nolint:err113
+		return fmt.Errorf("unsupported protocol: %s", protocol)
 	}
 
 	exprs = append(exprs,
@@ -317,13 +437,13 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 		},
 	)
 
-	sourcePortBytes := []byte{byte(source.Port() >> 8), byte(source.Port())}                //nolint:mnd
-	destinationPortBytes := []byte{byte(destination.Port() >> 8), byte(destination.Port())} //nolint:mnd
+	sourcePortBytes := []byte{byte(source.Port() >> 8), byte(source.Port())}                //nolint:mnd,gosec
+	destinationPortBytes := []byte{byte(destination.Port() >> 8), byte(destination.Port())} //nolint:mnd,gosec
 	exprs = append(exprs,
 		&expr.Payload{
 			DestRegister: 1,
 			Base:         expr.PayloadBaseTransportHeader,
-			Offset:       0, //nolint:mnd
+			Offset:       0,
 			Len:          2, //nolint:mnd
 		},
 		&expr.Cmp{
@@ -440,7 +560,7 @@ func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string, as
 				DestRegister:   1,
 				Len:            4, //nolint:mnd
 				Mask:           mask,
-				Xor:            []byte{0, 0, 0, 0}, //nolint:mnd
+				Xor:            []byte{0, 0, 0, 0},
 			},
 			&expr.Cmp{
 				Op:       expr.CmpOpEq,
@@ -463,7 +583,7 @@ func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string, as
 				DestRegister:   1,
 				Len:            16, //nolint:mnd
 				Mask:           mask,
-				Xor:            []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, //nolint:mnd
+				Xor:            []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 			},
 			&expr.Cmp{
 				Op:       expr.CmpOpEq,

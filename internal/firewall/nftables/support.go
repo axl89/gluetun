@@ -33,7 +33,7 @@ func (f *Firewall) Version(ctx context.Context) (string, error) {
 	outputStr := strings.TrimSpace(string(output))
 	words := strings.Fields(outputStr)
 	if len(words) == 0 {
-		return "", errors.New(emptyVersionError) //nolint:err113
+		return "", errors.New(emptyVersionError)
 	}
 	return words[0], nil
 }

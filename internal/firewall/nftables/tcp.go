@@ -94,16 +94,16 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 	// Match TCP protocol (6)
 	exprs = append(exprs,
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, //nolint:mnd
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
 	)
 
 	// Match source port
-	srcPortBytes := []byte{byte(src.Port() >> 8), byte(src.Port())} //nolint:mnd
+	srcPortBytes := []byte{byte(src.Port() >> 8), byte(src.Port())} //nolint:mnd,gosec // network byte order
 	exprs = append(exprs,
 		&expr.Payload{
 			DestRegister: 1,
 			Base:         expr.PayloadBaseTransportHeader,
-			Offset:       0, //nolint:mnd
+			Offset:       0,
 			Len:          2, //nolint:mnd
 		},
 		&expr.Cmp{
@@ -114,7 +114,7 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 	)
 
 	// Match destination port
-	dstPortBytes := []byte{byte(dst.Port() >> 8), byte(dst.Port())} //nolint:mnd
+	dstPortBytes := []byte{byte(dst.Port() >> 8), byte(dst.Port())} //nolint:mnd,gosec // network byte order
 	exprs = append(exprs,
 		&expr.Payload{
 			DestRegister: 1,
@@ -143,12 +143,12 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 		&expr.Cmp{
 			Op:       expr.CmpOpEq,
 			Register: 1,
-			Data:     []byte{0x04}, //nolint:mnd
+			Data:     []byte{0x04},
 		},
 	)
 
 	// Exclude packets with the mark using mark != excludeMark
-	markData := []byte{
+	markData := []byte{ //nolint:gosec // mark is int (32-bit), byte conversions are intentional
 		byte(excludeMark), byte(excludeMark >> 8), byte(excludeMark >> 16), byte(excludeMark >> 24), //nolint:mnd
 	}
 	exprs = append(exprs,

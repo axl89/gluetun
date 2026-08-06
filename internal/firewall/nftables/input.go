@@ -63,7 +63,7 @@ func (f *Firewall) AcceptInputToPort(_ context.Context, intf string, port uint16
 	}
 
 	table, inputChain, _, _ := setupFilterWithBaseChains(conn)
-	portBytes := []byte{byte(port >> 8), byte(port)} //nolint:mnd
+	portBytes := []byte{byte(port >> 8), byte(port)} //nolint:mnd,gosec // network byte order
 	const tcp, udp uint8 = 6, 17
 	protocols := []uint8{tcp, udp}
 
