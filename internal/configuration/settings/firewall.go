@@ -83,7 +83,7 @@ func (f *Firewall) overrideWith(other Firewall) {
 
 func (f *Firewall) setDefaults(globalLogLevel string) {
 	f.Enabled = gosettings.DefaultPointer(f.Enabled, true)
-	f.Implementation = gosettings.DefaultComparable(f.Implementation, "iptables")
+	f.Implementation = gosettings.DefaultComparable(f.Implementation, "auto")
 	f.Iptables.setDefaults(globalLogLevel)
 }
 
