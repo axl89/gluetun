@@ -154,7 +154,7 @@ func buildRedirectMatchExprs(intf string, protocol uint8, portBytes []byte) []ex
 }
 
 func isTableDoesNotExist(err error) bool {
-	return strings.Contains(err.Error(), "Table does not exist")
+	return err != nil && strings.Contains(err.Error(), "Table does not exist")
 }
 
 func removeFailedRules(rules []*nftables.Rule, failed []*nftables.Rule) (succeeded []*nftables.Rule) {
