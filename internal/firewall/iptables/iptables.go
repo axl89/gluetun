@@ -39,22 +39,6 @@ func (c *Config) Version(ctx context.Context) (string, error) {
 	return "iptables " + words[1], nil
 }
 
-func (c *Config) runIptablesInstructions(ctx context.Context, instructions []string) error {
-	c.iptablesMutex.Lock()
-	defer c.iptablesMutex.Unlock()
-
-	restore, err := c.saveAndRestoreIPv4(ctx)
-	if err != nil {
-		return err
-	}
-
-	err = c.runIptablesInstructionsNoSave(ctx, instructions)
-	if err != nil {
-		restore(ctx)
-	}
-	return err
-}
-
 func (c *Config) runIptablesInstructionsNoSave(ctx context.Context, instructions []string) error {
 	for _, instruction := range instructions {
 		if err := c.runIptablesInstructionNoSave(ctx, instruction); err != nil {
