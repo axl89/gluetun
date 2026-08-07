@@ -5,16 +5,16 @@ go 1.25.0
 require (
 	github.com/ProtonMail/go-srp v0.0.7
 	github.com/amnezia-vpn/amneziawg-go v0.2.18
-	github.com/breml/rootcerts v0.3.4
-	github.com/fatih/color v1.18.0
+	github.com/breml/rootcerts v0.3.7
+	github.com/fatih/color v1.19.0
 	github.com/google/nftables v0.3.0
 	github.com/jsimonetti/rtnetlink v1.4.2
-	github.com/klauspost/compress v1.18.4
+	github.com/klauspost/compress v1.19.1
 	github.com/klauspost/pgzip v1.2.6
 	github.com/mdlayher/genetlink v1.4.0
 	github.com/mdlayher/netlink v1.9.0
 	github.com/miekg/dns v1.1.62
-	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/qdm12/dns/v2 v2.0.0-rc9.0.20260421173011-9de8e7fdbe3a
 	github.com/qdm12/gluetun-servers v0.2.0
 	github.com/qdm12/goservices v0.1.1-0.20251104135713-6bee97bd4978
@@ -26,7 +26,7 @@ require (
 	github.com/qdm12/ss-server v0.6.0
 	github.com/stretchr/testify v1.11.1
 	github.com/ti-mo/netfilter v0.5.3
-	github.com/ulikunitz/xz v0.5.15
+	github.com/ulikunitz/xz v0.5.16
 	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a
 	go.uber.org/mock v0.6.0
 	golang.org/x/net v0.55.0
@@ -34,7 +34,7 @@ require (
 	golang.org/x/text v0.38.0
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
-	gopkg.in/ini.v1 v1.67.1
+	gopkg.in/ini.v1 v1.67.3
 )
 
 require (
@@ -46,7 +46,7 @@ require (
 	github.com/cronokirby/saferith v0.33.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -57,7 +57,7 @@ require (
 	github.com/prometheus/common v0.60.1 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20241009180824-f66d83c29e7c // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
