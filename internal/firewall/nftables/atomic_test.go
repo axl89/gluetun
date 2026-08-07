@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
@@ -13,12 +14,12 @@ import (
 func Test_SaveAndRestore(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	logger := NewMockLogger(ctrl)
-	fw := New(logger)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
-	restore, err := fw.SaveAndRestore(ctx)
+	restore, err := firewall.SaveAndRestore(ctx)
 	// SaveAndRestore requires nftables connection, may fail in test env
 	if err != nil {
 		assert.Nil(t, restore)
@@ -87,13 +88,14 @@ func Test_restoreFunction_LogsWarningOnConnectionError(t *testing.T) {
 	// Expect Warnf to be called when restore fails due to connection error
 	logger.EXPECT().Warnf(gomock.Any(), gomock.Any()).AnyTimes()
 
-	fw := New(logger)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	// Create a restore function directly
 	restore := func(_ context.Context) {
 		conn, err := nftables.New()
 		if err != nil {
-			fw.logger.Warnf("creating nftables connection for restore: %s", err)
+			firewall.logger.Warnf("creating nftables connection for restore: %s", err)
 			return
 		}
 		_ = conn
@@ -101,19 +103,6 @@ func Test_restoreFunction_LogsWarningOnConnectionError(t *testing.T) {
 
 	// Call the restore function - should log warning if connection fails
 	// but not panic
-	ctx := context.Background()
+	ctx := t.Context()
 	restore(ctx)
-}
-
-func Test_FirewallMutexProtection(t *testing.T) {
-	t.Parallel()
-
-	// Verify that the Firewall struct has mutex protection
-	fw := &Firewall{
-		rules: []*nftables.Rule{},
-	}
-
-	// Just verify it initializes without issues
-	assert.NotNil(t, fw)
-	assert.Empty(t, fw.rules)
 }

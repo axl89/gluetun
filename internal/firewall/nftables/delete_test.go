@@ -29,8 +29,8 @@ func Test_deleteRule(t *testing.T) {
 	})
 
 	testCases := map[string]struct {
-		setupRules     func(t *testing.T, fw *Firewall)
-		ruleToDelete   func(fw *Firewall) *nftables.Rule
+		setupRules     func(t *testing.T, firewall *Firewall)
+		ruleToDelete   func(firewall *Firewall) *nftables.Rule
 		expectError    bool
 		expectErrorIs  error
 		expectRulesLen int
@@ -52,26 +52,26 @@ func Test_deleteRule(t *testing.T) {
 		},
 	}
 
-	for name, tc := range testCases {
+	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			fw := &Firewall{rules: []*nftables.Rule{}}
-			tc.setupRules(t, fw)
-			ruleToDelete := tc.ruleToDelete(fw)
+			firewall := &Firewall{rules: []*nftables.Rule{}}
+			testCase.setupRules(t, firewall)
+			ruleToDelete := testCase.ruleToDelete(firewall)
 
-			err := fw.deleteRule(conn, ruleToDelete)
+			err := firewall.deleteRule(conn, ruleToDelete)
 
-			if tc.expectError {
+			if testCase.expectError {
 				require.Error(t, err)
-				if tc.expectErrorIs != nil {
-					assert.ErrorIs(t, err, tc.expectErrorIs)
+				if testCase.expectErrorIs != nil {
+					assert.ErrorIs(t, err, testCase.expectErrorIs)
 				}
 			} else {
 				assert.NoError(t, err)
 			}
 
-			assert.Len(t, fw.rules, tc.expectRulesLen)
+			assert.Len(t, firewall.rules, testCase.expectRulesLen)
 		})
 	}
 }
@@ -123,17 +123,17 @@ func Test_deleteRule_withFlushing(t *testing.T) {
 	err = conn.Flush()
 	require.NoError(t, err)
 
-	fw := &Firewall{rules: rules}
+	firewall := &Firewall{rules: rules}
 
 	// Delete middle rule
-	err = fw.deleteRule(conn, rules[1])
+	err = firewall.deleteRule(conn, rules[1])
 	require.NoError(t, err)
-	assert.Len(t, fw.rules, 2)
+	assert.Len(t, firewall.rules, 2)
 
 	// Delete first rule
-	err = fw.deleteRule(conn, rules[0])
+	err = firewall.deleteRule(conn, rules[0])
 	require.NoError(t, err)
-	assert.Len(t, fw.rules, 1)
+	assert.Len(t, firewall.rules, 1)
 
 	// Try to delete a rule that doesn't exist in fw.rules
 	nonExistentRule := &nftables.Rule{
@@ -141,8 +141,8 @@ func Test_deleteRule_withFlushing(t *testing.T) {
 		Chain: chain,
 		Exprs: []expr.Any{&expr.Verdict{Kind: expr.VerdictDrop}},
 	}
-	err = fw.deleteRule(conn, nonExistentRule)
+	err = firewall.deleteRule(conn, nonExistentRule)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errRuleToDeleteNotFound)
-	assert.Len(t, fw.rules, 1)
+	assert.Len(t, firewall.rules, 1)
 }

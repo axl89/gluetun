@@ -1,8 +1,8 @@
 package nftables
 
 import (
-	"context"
 	"fmt"
+	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
@@ -208,11 +208,13 @@ func Test_removeFailedRules(t *testing.T) {
 func Test_RedirectPort(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	// Test basic redirect port call - in non-root environments, this fails at connection level.
-	err := fw.RedirectPort(ctx, "tun0", 80, 8080, false)
+	err := firewall.RedirectPort(ctx, "tun0", 80, 8080, false)
 	if err != nil {
 		assert.Contains(t, err.Error(), "creating nftables connection")
 	}

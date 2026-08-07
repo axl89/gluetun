@@ -1,8 +1,8 @@
 package nftables
 
 import (
-	"context"
 	"net/netip"
+	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
@@ -100,10 +100,12 @@ func Test_cidrMask(t *testing.T) {
 func Test_AcceptIpv6MulticastOutput(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
-	err := fw.AcceptIpv6MulticastOutput(ctx, "tun0")
+	err := firewall.AcceptIpv6MulticastOutput(ctx, "tun0")
 	// In non-root environments, this fails when flushing but should construct the correct rule structure.
 	if err != nil {
 		assert.Contains(t, err.Error(), "creating nftables connection")
@@ -305,8 +307,10 @@ func Test_AcceptOutputTrafficToVPN(t *testing.T) {
 func Test_AcceptOutputTrafficToVPN_UnsupportedProtocol(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	conn := models.Connection{
 		IP:       netip.MustParseAddr("10.0.0.1"),
@@ -314,7 +318,7 @@ func Test_AcceptOutputTrafficToVPN_UnsupportedProtocol(t *testing.T) {
 		Protocol: "sctp",
 	}
 
-	err := fw.AcceptOutputTrafficToVPN(ctx, "eth0", conn, false)
+	err := firewall.AcceptOutputTrafficToVPN(ctx, "eth0", conn, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported protocol: sctp")
 }

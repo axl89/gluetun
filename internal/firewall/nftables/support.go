@@ -2,7 +2,6 @@ package nftables
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,24 +17,19 @@ func IsSupported() bool {
 	if err != nil {
 		return false
 	}
-	_, err = conn.ListTable("filter")
+
+	_, err = conn.ListTables()
 	return err == nil
 }
 
 // Version obtains the version of the installed nftables.
-func (f *Firewall) Version(ctx context.Context) (string, error) {
-	const emptyVersionError = "nft version string is empty"
-	cmd := exec.CommandContext(ctx, "nft", "-v")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("running nft -v: %w", err)
+func (f *Firewall) Version(_ context.Context) (string, error) {
+	for _, dependency := range f.buildInfo.Deps {
+		if dependency.Path == "github.com/google/nftables" {
+			return dependency.Version + " (google/nftables)", nil
+		}
 	}
-	outputStr := strings.TrimSpace(string(output))
-	words := strings.Fields(outputStr)
-	if len(words) == 0 {
-		return "", errors.New(emptyVersionError)
-	}
-	return words[0], nil
+	return "", fmt.Errorf("github.com/google/nftables dependency not found in build info")
 }
 
 // RunUserPostRules reads and executes custom nft commands from a file.

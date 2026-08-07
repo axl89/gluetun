@@ -1,17 +1,14 @@
 package nftables
 
 import (
-	"context"
+	"runtime/debug"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/mock/gomock"
 )
 
 func Test_SetBaseChainsPolicy_ErrorCases(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
 
 	testCases := map[string]struct {
 		policy string
@@ -50,11 +47,11 @@ func Test_SetBaseChainsPolicy_ErrorCases(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ctrl := gomock.NewController(t)
-			logger := NewMockLogger(ctrl)
-			fw := New(logger)
+			logger := (Logger)(nil)
+			buildInfo := (*debug.BuildInfo)(nil)
+			firewall := New(logger, buildInfo)
 
-			err := fw.SetBaseChainsPolicy(ctx, tc.policy)
+			err := firewall.SetBaseChainsPolicy(t.Context(), tc.policy)
 
 			if tc.want {
 				assert.Error(t, err)
@@ -73,14 +70,13 @@ func Test_SetBaseChainsPolicy_ErrorCases(t *testing.T) {
 func Test_SetIPv4AllPolicies(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	logger := NewMockLogger(ctrl)
-	fw := New(logger)
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	// SetIPv4AllPolicies delegates to SetBaseChainsPolicy
 	// Test with an invalid policy to verify delegation
-	err := fw.SetIPv4AllPolicies(ctx, "INVALID")
+	err := firewall.SetIPv4AllPolicies(t.Context(), "INVALID")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrPolicyUnknown)
 }
@@ -88,14 +84,13 @@ func Test_SetIPv4AllPolicies(t *testing.T) {
 func Test_SetIPv6AllPolicies(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	logger := NewMockLogger(ctrl)
-	fw := New(logger)
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	// SetIPv6AllPolicies delegates to SetBaseChainsPolicy
 	// Test with an invalid policy to verify delegation
-	err := fw.SetIPv6AllPolicies(ctx, "INVALID")
+	err := firewall.SetIPv6AllPolicies(t.Context(), "INVALID")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrPolicyUnknown)
 }

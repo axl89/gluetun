@@ -1,8 +1,8 @@
 package nftables
 
 import (
-	"context"
 	"net/netip"
+	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
@@ -14,10 +14,12 @@ import (
 func Test_AcceptInputThroughInterface(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
-	err := fw.AcceptInputThroughInterface(ctx, "tun0")
+	err := firewall.AcceptInputThroughInterface(ctx, "tun0")
 	// Verify no panic; may fail if not running as root
 	if err != nil {
 		assert.Contains(t, err.Error(), "creating nftables connection")
@@ -58,10 +60,12 @@ func Test_AcceptInputToPort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
-			fw := New(nil)
+			ctx := t.Context()
+			logger := (Logger)(nil)
+			buildInfo := (*debug.BuildInfo)(nil)
+			firewall := New(logger, buildInfo)
 
-			err := fw.AcceptInputToPort(ctx, tc.intf, tc.port, tc.remove)
+			err := firewall.AcceptInputToPort(ctx, tc.intf, tc.port, tc.remove)
 			// May fail if not running as root
 			if err != nil && !tc.remove {
 				assert.Contains(t, err.Error(), "creating nftables connection")
@@ -114,8 +118,6 @@ func Test_AcceptInputToPort_ExpressionStructure(t *testing.T) {
 func Test_AcceptInputToSubnet(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
 	testCases := map[string]struct {
 		intf   string
 		subnet netip.Prefix
@@ -150,9 +152,11 @@ func Test_AcceptInputToSubnet(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			fw := New(nil)
+			logger := (Logger)(nil)
+			buildInfo := (*debug.BuildInfo)(nil)
+			firewall := New(logger, buildInfo)
 
-			err := fw.AcceptInputToSubnet(ctx, tc.intf, tc.subnet)
+			err := firewall.AcceptInputToSubnet(t.Context(), tc.intf, tc.subnet)
 			// May fail if not running as root
 			if err != nil {
 				assert.Contains(t, err.Error(), "creating nftables connection")

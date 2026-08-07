@@ -1,7 +1,7 @@
 package nftables
 
 import (
-	"context"
+	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
@@ -13,10 +13,12 @@ import (
 func Test_AcceptEstablishedRelatedTraffic(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
-	err := fw.AcceptEstablishedRelatedTraffic(ctx)
+	err := firewall.AcceptEstablishedRelatedTraffic(ctx)
 	// This test verifies the function doesn't panic and constructs the correct rule structure.
 	// In environments without root access, it will fail when trying to flush.
 	// We test the logic by verifying it returns a reasonable error if nftables isn't available.

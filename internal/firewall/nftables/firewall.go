@@ -1,13 +1,15 @@
 package nftables
 
 import (
+	"runtime/debug"
 	"sync"
 
 	"github.com/google/nftables"
 )
 
 type Firewall struct {
-	logger Logger
+	logger    Logger
+	buildInfo *debug.BuildInfo
 
 	// rules are only rules added and tracked for later removal.
 	// Not all rules added are tracked for removal.
@@ -15,8 +17,9 @@ type Firewall struct {
 	mutex sync.Mutex
 }
 
-func New(logger Logger) *Firewall {
+func New(logger Logger, buildInfo *debug.BuildInfo) *Firewall {
 	return &Firewall{
-		logger: logger,
+		logger:    logger,
+		buildInfo: buildInfo,
 	}
 }

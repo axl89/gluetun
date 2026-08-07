@@ -1,9 +1,9 @@
 package nftables
 
 import (
-	"context"
 	"fmt"
 	"net/netip"
+	"runtime/debug"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,14 +13,16 @@ import (
 func Test_TempDropOutputTCPRST(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	src := netip.MustParseAddrPort("192.168.1.1:12345")
 	dst := netip.MustParseAddrPort("10.0.0.1:443")
 	excludeMark := 0x100
 
-	revert, err := fw.TempDropOutputTCPRST(ctx, src, dst, excludeMark)
+	revert, err := firewall.TempDropOutputTCPRST(ctx, src, dst, excludeMark)
 	// May fail if not running as root; just verify no panic and correct error type
 	if err != nil {
 		assert.Nil(t, revert)
@@ -33,14 +35,16 @@ func Test_TempDropOutputTCPRST(t *testing.T) {
 func Test_TempDropOutputTCPRST_ipv6(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	fw := New(nil)
+	ctx := t.Context()
+	logger := (Logger)(nil)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	src := netip.MustParseAddrPort("[2001:db8::1]:12345")
 	dst := netip.MustParseAddrPort("[2001:db8::2]:443")
-	excludeMark := 0x100
+	const excludeMark = 0x100
 
-	revert, err := fw.TempDropOutputTCPRST(ctx, src, dst, excludeMark)
+	revert, err := firewall.TempDropOutputTCPRST(ctx, src, dst, excludeMark)
 	if err != nil {
 		assert.Nil(t, revert)
 		assert.Contains(t, err.Error(), "creating nftables connection")

@@ -1,9 +1,11 @@
 package nftables
 
 import (
-	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,44 +16,52 @@ import (
 func Test_IsSupported(t *testing.T) {
 	t.Parallel()
 
+	expectedSupported := true
+
+	// Check nft is available and working
+	nftPath, err := exec.LookPath("nft")
+	if err != nil {
+		t.Skip("nft command not found")
+	}
+	cmd := exec.CommandContext(t.Context(), nftPath, "list", "tables")
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		// nft failed so most likely nftables is not supported
+		expectedSupported = false
+	} else {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+			if !strings.HasPrefix(line, "table ") {
+				t.Skipf("nft command output does not contain expected table lines: %s",
+					string(data))
+			}
+		}
+	}
+
 	supported := IsSupported()
-	// IsSupported checks if nftables library can create a connection and list tables.
-	// In non-root or restricted environments this may return false.
-	// Just verify it doesn't panic.
-	assert.IsType(t, false, supported)
+	assert.Equal(t, expectedSupported, supported)
 }
 
 func Test_Version(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	t.Run("returns version string", func(t *testing.T) {
-		t.Parallel()
+	buildInfo := &debug.BuildInfo{
+		Deps: []*debug.Module{
+			{
+				Path:    "github.com/google/nftables",
+				Version: "v0.3.0",
+			},
+		},
+	}
 
-		ctrl := gomock.NewController(t)
-		logger := NewMockLogger(ctrl)
-		fw := New(logger)
-
-		// Version uses exec.CommandContext to run "nft -v"
-		// If nft command is not available, expect error.
-		version, err := fw.Version(ctx)
-
-		if os.Getenv("NFT_AVAILABLE") == "1" {
-			// In environments with nft available, verify we get a version
-			require.NoError(t, err)
-			assert.Regexp(t, `v\d+\.\d+(\.\d+)?`, version, "version should match 'vX.Y' format")
-		} else {
-			// If nft is not available, expect an error
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "running nft -v")
-		}
-	})
+	logger := (Logger)(nil)
+	firewall := New(logger, buildInfo)
+	version, err := firewall.Version(t.Context())
+	require.NoError(t, err)
+	t.Log(version)
 }
 
 func Test_RunUserPostRules(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
 
 	testCases := map[string]struct {
 		setupFile       func(t *testing.T, dir string) string
@@ -168,12 +178,13 @@ func Test_RunUserPostRules(t *testing.T) {
 				logger.EXPECT().Warnf(gomock.Any(), gomock.Any()).AnyTimes()
 			}
 
-			fw := New(logger)
+			buildInfo := (*debug.BuildInfo)(nil)
+			firewall := New(logger, buildInfo)
 
 			dir := t.TempDir()
 			filepath := testCase.setupFile(t, dir)
 
-			err := fw.RunUserPostRules(ctx, filepath)
+			err := firewall.RunUserPostRules(t.Context(), filepath)
 
 			if testCase.expectError {
 				require.Error(t, err)
@@ -192,10 +203,10 @@ func Test_RunUserPostRules_valid_nft_command(t *testing.T) {
 		t.Skip("nft command not available")
 	}
 
-	ctx := context.Background()
 	ctrl := gomock.NewController(t)
 	logger := NewMockLogger(ctrl)
-	fw := New(logger)
+	buildInfo := (*debug.BuildInfo)(nil)
+	firewall := New(logger, buildInfo)
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "valid.txt")
@@ -207,6 +218,6 @@ nft delete table inet test_gluetun_` + filepath.Base(dir) + `
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644)) //nolint:gosec // test file
 
-	err := fw.RunUserPostRules(ctx, path)
+	err := firewall.RunUserPostRules(t.Context(), path)
 	assert.NoError(t, err)
 }
