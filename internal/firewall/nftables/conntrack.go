@@ -12,7 +12,7 @@ func (f *Firewall) AcceptEstablishedRelatedTraffic(_ context.Context) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}

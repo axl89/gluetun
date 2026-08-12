@@ -30,7 +30,7 @@ func (f *Firewall) AcceptIpv6MulticastOutput(_ context.Context, intf string) err
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -101,7 +101,7 @@ func (f *Firewall) AcceptOutputTrafficToVPN(_ context.Context, defaultInterface 
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -221,7 +221,7 @@ func (f *Firewall) AcceptOutput(_ context.Context, protocol, intf string,
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -341,7 +341,7 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -498,7 +498,7 @@ func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string, as
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -628,7 +628,7 @@ func (f *Firewall) AcceptOutputThroughInterface(_ context.Context, intf string, 
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}

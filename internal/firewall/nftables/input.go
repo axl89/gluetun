@@ -13,7 +13,7 @@ func (f *Firewall) AcceptInputThroughInterface(_ context.Context, intf string) e
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -57,7 +57,7 @@ func (f *Firewall) AcceptInputToPort(_ context.Context, intf string, port uint16
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -114,7 +114,7 @@ func (f *Firewall) AcceptInputToSubnet(_ context.Context, intf string, subnet ne
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}

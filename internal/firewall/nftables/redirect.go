@@ -22,7 +22,7 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -93,7 +93,7 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 	return nil
 }
 
-func buildRedirectRule(_ *nftables.Conn, natTable *nftables.Table,
+func buildRedirectRule(_ conn, natTable *nftables.Table,
 	preroutingChain *nftables.Chain, intf string, protocol uint8,
 	sourcePortBytes []byte, destinationPort uint16,
 ) *nftables.Rule {

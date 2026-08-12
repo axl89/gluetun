@@ -10,7 +10,7 @@ import (
 
 var errRuleToDeleteNotFound = errors.New("rule not found for removal")
 
-func (f *Firewall) deleteRule(conn *nftables.Conn, rule *nftables.Rule) error {
+func (f *Firewall) deleteRule(conn conn, rule *nftables.Rule) error {
 	for i, existing := range f.rules {
 		if !reflect.DeepEqual(existing, rule) {
 			continue

@@ -19,7 +19,7 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -185,7 +185,7 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 		f.mutex.Lock()
 		defer f.mutex.Unlock()
 
-		revertConn, err := nftables.New()
+		revertConn, err := f.dialFunc()
 		if err != nil {
 			return fmt.Errorf("creating nftables connection for revert: %w", err)
 		}

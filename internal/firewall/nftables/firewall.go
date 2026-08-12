@@ -9,6 +9,7 @@ import (
 
 type Firewall struct {
 	logger    Logger
+	dialFunc  dialFunc
 	buildInfo *debug.BuildInfo
 
 	// rules are only rules added and tracked for later removal.
@@ -21,5 +22,6 @@ func New(logger Logger, buildInfo *debug.BuildInfo) *Firewall {
 	return &Firewall{
 		logger:    logger,
 		buildInfo: buildInfo,
+		dialFunc:  func() (conn, error) { return nftables.New() },
 	}
 }

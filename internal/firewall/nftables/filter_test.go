@@ -5,44 +5,56 @@ import (
 
 	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_setupFilterWithBaseChains(t *testing.T) {
 	t.Parallel()
 
-	conn, err := nftables.New()
-	require.NoError(t, err)
+	testCases := map[string]struct {
+		expectedTableFamily nftables.TableFamily
+	}{
+		"default": {
+			expectedTableFamily: nftables.TableFamilyINet,
+		},
+	}
 
-	table, inputChain, forwardChain, outputChain := setupFilterWithBaseChains(conn)
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NotNil(t, table)
-	assert.Equal(t, nftables.TableFamilyINet, table.Family)
-	assert.Equal(t, "filter", table.Name)
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
 
-	// Verify all chains reference the same table
-	require.NotNil(t, inputChain)
-	require.NotNil(t, forwardChain)
-	require.NotNil(t, outputChain)
-	assert.Equal(t, table, inputChain.Table)
-	assert.Equal(t, table, forwardChain.Table)
-	assert.Equal(t, table, outputChain.Table)
+			_ = testCase.expectedTableFamily
 
-	// Verify input chain properties
-	assert.Equal(t, "input", inputChain.Name)
-	assert.Equal(t, nftables.ChainTypeFilter, inputChain.Type)
-	assert.Equal(t, nftables.ChainHookInput, inputChain.Hooknum)
-	assert.Equal(t, nftables.ChainPriorityFilter, inputChain.Priority)
+			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+				return table
+			})
+			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+				return chain
+			}).Times(3)
 
-	// Verify forward chain properties
-	assert.Equal(t, "forward", forwardChain.Name)
-	assert.Equal(t, nftables.ChainTypeFilter, forwardChain.Type)
-	assert.Equal(t, nftables.ChainHookForward, forwardChain.Hooknum)
-	assert.Equal(t, nftables.ChainPriorityFilter, forwardChain.Priority)
+			resultTable, resultInputChain, resultForwardChain, resultOutputChain := setupFilterWithBaseChains(mockConn)
 
-	// Verify output chain properties
-	assert.Equal(t, "output", outputChain.Name)
-	assert.Equal(t, nftables.ChainTypeFilter, outputChain.Type)
-	assert.Equal(t, nftables.ChainHookOutput, outputChain.Hooknum)
-	assert.Equal(t, nftables.ChainPriorityFilter, outputChain.Priority)
+			assert.NotNil(t, resultTable)
+			assert.Equal(t, "filter", resultTable.Name)
+			assert.Equal(t, testCase.expectedTableFamily, resultTable.Family)
+
+			assert.NotNil(t, resultInputChain)
+			assert.Equal(t, "input", resultInputChain.Name)
+			assert.Equal(t, nftables.ChainTypeFilter, resultInputChain.Type)
+			assert.Equal(t, nftables.ChainHookInput, resultInputChain.Hooknum)
+
+			assert.NotNil(t, resultForwardChain)
+			assert.Equal(t, "forward", resultForwardChain.Name)
+			assert.Equal(t, nftables.ChainTypeFilter, resultForwardChain.Type)
+			assert.Equal(t, nftables.ChainHookForward, resultForwardChain.Hooknum)
+
+			assert.NotNil(t, resultOutputChain)
+			assert.Equal(t, "output", resultOutputChain.Name)
+			assert.Equal(t, nftables.ChainTypeFilter, resultOutputChain.Type)
+			assert.Equal(t, nftables.ChainHookOutput, resultOutputChain.Hooknum)
+		})
+	}
 }

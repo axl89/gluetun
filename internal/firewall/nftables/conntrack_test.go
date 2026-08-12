@@ -1,126 +1,164 @@
 package nftables
 
 import (
-	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_AcceptEstablishedRelatedTraffic(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
-	logger := (Logger)(nil)
-	buildInfo := (*debug.BuildInfo)(nil)
-	firewall := New(logger, buildInfo)
+	testCases := map[string]struct {
+		setupMockConn func() (dialFunc, *MockConn)
+		errorContains string
+		validateExprs func(t *testing.T, rules []*nftables.Rule)
+	}{
+		"dial_error": {
+			setupMockConn: func() (dialFunc, *MockConn) {
+				return func() (conn, error) { return nil, assert.AnError }, nil
+			},
+			errorContains: "creating nftables connection",
+		},
+		"flush_error": {
+			setupMockConn: func() (dialFunc, *MockConn) {
+				ctrl := gomock.NewController(t)
+				mockConn := NewMockConn(ctrl)
 
-	err := firewall.AcceptEstablishedRelatedTraffic(ctx)
-	// This test verifies the function doesn't panic and constructs the correct rule structure.
-	// In environments without root access, it will fail when trying to flush.
-	// We test the logic by verifying it returns a reasonable error if nftables isn't available.
-	if err != nil {
-		// Expected failure in non-root environments
-		assert.Contains(t, err.Error(), "creating nftables connection")
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+					return table
+				})
+				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+					return chain
+				}).Times(3)
+				mockConn.EXPECT().AddRule(gomock.Any()).Times(2)
+				mockConn.EXPECT().Flush().Return(assert.AnError)
+
+				return func() (conn, error) { return mockConn, nil }, mockConn
+			},
+			errorContains: "flushing",
+		},
+		"success_with_correct_expressions": {
+			setupMockConn: func() (dialFunc, *MockConn) {
+				ctrl := gomock.NewController(t)
+				mockConn := NewMockConn(ctrl)
+
+				var rulesAdded []*nftables.Rule
+
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+					return table
+				})
+				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+					return chain
+				}).Times(3)
+				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+					rulesAdded = append(rulesAdded, rule)
+					return rule
+				}).Times(2)
+				mockConn.EXPECT().Flush().Return(nil)
+
+				return func() (conn, error) { return mockConn, nil }, mockConn
+			},
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dialFunc, _ := testCase.setupMockConn()
+
+			firewall := &Firewall{dialFunc: dialFunc}
+
+			ctx := t.Context()
+			err := firewall.AcceptEstablishedRelatedTraffic(ctx)
+
+			if testCase.errorContains != "" {
+				assert.Error(t, err)
+				if testCase.errorContains != "" {
+					assert.ErrorContains(t, err, testCase.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 
-func Test_conntrackRuleExpressions(t *testing.T) {
+func Test_AcceptEstablishedRelatedTraffic_expression_structure(t *testing.T) {
 	t.Parallel()
 
-	// This test verifies the structure of conntrack expressions used in
-	// AcceptEstablishedRelatedTraffic by constructing them directly.
-	// The rule should:
-	// 1. Load connection tracking state into register 1
-	// 2. Bitwise AND with ESTABLISHED|RELATED mask
-	// 3. Compare != 0 (if not matching, continue)
-	// 4. ACCEPT
+	ctrl := gomock.NewController(t)
+	mockConn := NewMockConn(ctrl)
 
-	ctStateExprs := []expr.Any{
-		&expr.Ct{
-			Key:      expr.CtKeySTATE,
-			Register: 1,
-		},
-		&expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            4,
-			Mask: []byte{
-				byte(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
-				0x00, 0x00, 0x00,
-			},
-			Xor: []byte{0x00, 0x00, 0x00, 0x00},
-		},
-		&expr.Cmp{
-			Op:       expr.CmpOpNeq,
-			Register: 1,
-			Data:     []byte{0x00, 0x00, 0x00, 0x00},
-		},
-		&expr.Verdict{
-			Kind: expr.VerdictAccept,
-		},
-	}
+	var rulesAdded []*nftables.Rule
+	var chainsAdded []*nftables.Chain
 
-	require.Len(t, ctStateExprs, 4)
+	mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+		return table
+	})
+	mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+		chainsAdded = append(chainsAdded, chain)
+		return chain
+	}).Times(3)
+	mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+		rulesAdded = append(rulesAdded, rule)
+		return rule
+	}).Times(2)
+	mockConn.EXPECT().Flush().Return(nil)
 
-	// Verify CT expression
-	ctExpr, ok := ctStateExprs[0].(*expr.Ct)
-	require.True(t, ok)
+	dialFunc := func() (conn, error) { return mockConn, nil }
+
+	firewall := &Firewall{dialFunc: dialFunc}
+
+	ctx := t.Context()
+	err := firewall.AcceptEstablishedRelatedTraffic(ctx)
+	assert.NoError(t, err)
+
+	assert.Len(t, chainsAdded, 3)
+	assert.Len(t, rulesAdded, 2)
+
+	// Verify input chain rule
+	assert.Equal(t, chainsAdded[0].Name, "input")
+	assert.Equal(t, chainsAdded[0], rulesAdded[0].Chain)
+
+	// Verify output chain rule
+	assert.Equal(t, chainsAdded[2].Name, "output")
+	assert.Equal(t, chainsAdded[2], rulesAdded[1].Chain)
+
+	// Verify expression structure for first rule (input)
+	exprs := rulesAdded[0].Exprs
+	assert.Len(t, exprs, 4)
+
+	// Ct state expression
+	ctExpr, ok := exprs[0].(*expr.Ct)
+	assert.True(t, ok, "expected Ct expression")
 	assert.Equal(t, expr.CtKeySTATE, ctExpr.Key)
 	assert.Equal(t, uint32(1), ctExpr.Register)
 
-	// Verify Bitwise expression
-	bwExpr, ok := ctStateExprs[1].(*expr.Bitwise)
-	require.True(t, ok)
+	// Bitwise expression
+	bwExpr, ok := exprs[1].(*expr.Bitwise)
+	assert.True(t, ok, "expected Bitwise expression")
 	assert.Equal(t, uint32(1), bwExpr.SourceRegister)
 	assert.Equal(t, uint32(1), bwExpr.DestRegister)
 	assert.Equal(t, uint32(4), bwExpr.Len)
-	// INVALID=0x01, ESTABLISHED=0x02, RELATED=0x04, NEW=0x08
-	// ESTABLISHED | RELATED = 0x06
-	assert.Equal(t, byte(0x06), bwExpr.Mask[0])
+	expectedMask := []byte{byte(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), 0x00, 0x00, 0x00}
+	assert.Equal(t, expectedMask, bwExpr.Mask)
 
-	// Verify Cmp expression (not equal to zero)
-	cmpExpr, ok := ctStateExprs[2].(*expr.Cmp)
-	require.True(t, ok)
+	// Cmp expression
+	cmpExpr, ok := exprs[2].(*expr.Cmp)
+	assert.True(t, ok, "expected Cmp expression")
 	assert.Equal(t, expr.CmpOpNeq, cmpExpr.Op)
-	assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, cmpExpr.Data)
+	assert.Equal(t, uint32(1), cmpExpr.Register)
 
-	// Verify Verdict expression
-	verdict, ok := ctStateExprs[3].(*expr.Verdict)
-	require.True(t, ok)
-	assert.Equal(t, expr.VerdictAccept, verdict.Kind)
-}
+	// Verdict expression
+	verdictExpr, ok := exprs[3].(*expr.Verdict)
+	assert.True(t, ok, "expected Verdict expression")
+	assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
 
-func Test_conntrackRuleTableChainAssignment(t *testing.T) {
-	t.Parallel()
-
-	// Verify that conntrack rules would be correctly assigned to input and output chains
-	conn, err := nftables.New()
-	require.NoError(t, err)
-	table, inputChain, _, outputChain := setupFilterWithBaseChains(conn)
-
-	ctStateExprs := []expr.Any{
-		&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
-		&expr.Verdict{Kind: expr.VerdictAccept},
-	}
-
-	inputRule := &nftables.Rule{
-		Table: table,
-		Chain: inputChain,
-		Exprs: ctStateExprs,
-	}
-
-	outputRule := &nftables.Rule{
-		Table: table,
-		Chain: outputChain,
-		Exprs: ctStateExprs,
-	}
-
-	assert.Equal(t, "filter", inputRule.Table.Name)
-	assert.Equal(t, "input", inputRule.Chain.Name)
-	assert.Equal(t, "filter", outputRule.Table.Name)
-	assert.Equal(t, "output", outputRule.Chain.Name)
+	// Output rule should have same structure as input rule
+	assert.Equal(t, rulesAdded[0].Exprs, rulesAdded[1].Exprs)
 }

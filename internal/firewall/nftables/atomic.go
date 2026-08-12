@@ -13,7 +13,7 @@ func (f *Firewall) SaveAndRestore(_ context.Context) (restore func(context.Conte
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
@@ -22,7 +22,7 @@ func (f *Firewall) SaveAndRestore(_ context.Context) (restore func(context.Conte
 		return nil, fmt.Errorf("saving nftables state: %w", err)
 	}
 	return func(_ context.Context) {
-		conn, err := nftables.New()
+		conn, err := f.dialFunc()
 		if err != nil {
 			f.logger.Warnf("creating nftables connection for restore: %s", err)
 			return
@@ -44,7 +44,7 @@ type savedChain struct {
 	rules []*nftables.Rule
 }
 
-func saveTables(conn *nftables.Conn) ([]savedTable, error) {
+func saveTables(conn conn) ([]savedTable, error) {
 	tables, err := conn.ListTables()
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func saveTables(conn *nftables.Conn) ([]savedTable, error) {
 	return savedTables, nil
 }
 
-func restoreTables(conn *nftables.Conn, savedTables []savedTable) error {
+func restoreTables(conn conn, savedTables []savedTable) error {
 	conn.FlushRuleset()
 
 	for _, savedTable := range savedTables {

@@ -27,7 +27,7 @@ func (f *Firewall) SetBaseChainsPolicy(_ context.Context, policy string) error {
 		return fmt.Errorf("%w: %s", ErrPolicyUnknown, policy)
 	}
 
-	conn, err := nftables.New()
+	conn, err := f.dialFunc()
 	if err != nil {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}

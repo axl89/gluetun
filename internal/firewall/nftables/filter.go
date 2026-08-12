@@ -2,7 +2,7 @@ package nftables
 
 import "github.com/google/nftables"
 
-func setupFilterWithBaseChains(conn *nftables.Conn) (table *nftables.Table,
+func setupFilterWithBaseChains(conn conn) (table *nftables.Table,
 	inputChain, forwardChain, outputChain *nftables.Chain,
 ) {
 	table = conn.AddTable(&nftables.Table{

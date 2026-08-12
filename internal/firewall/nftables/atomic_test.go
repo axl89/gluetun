@@ -1,108 +1,282 @@
 package nftables
 
 import (
-	"context"
-	"runtime/debug"
 	"testing"
 
 	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
 
 func Test_SaveAndRestore(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
-	logger := (Logger)(nil)
-	buildInfo := (*debug.BuildInfo)(nil)
-	firewall := New(logger, buildInfo)
+	testCases := map[string]struct {
+		setupFirstConn  func(ctrl *gomock.Controller) dialFunc
+		setupSecondConn func(ctrl *gomock.Controller) dialFunc
+		setupMockLogger func(ctrl *gomock.Controller) Logger
+		errorContains   string
+	}{
+		"dial_error_on_save": {
+			setupFirstConn: func(_ *gomock.Controller) dialFunc {
+				return func() (conn, error) { return nil, assert.AnError }
+			},
+			errorContains: "creating nftables connection",
+		},
+		"save_error_list_tables": {
+			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return(nil, assert.AnError)
+				return func() (conn, error) { return mockConn, nil }
+			},
+			errorContains: "saving nftables state",
+		},
+		"success_save_and_restore_no_tables": {
+			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return(nil, nil)
+				return func() (conn, error) { return mockConn, nil }
+			},
+			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().FlushRuleset()
+				mockConn.EXPECT().Flush().Return(nil)
+				return func() (conn, error) { return mockConn, nil }
+			},
+		},
+		"success_save_restore_with_tables_and_chains": {
+			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
+				chain := &nftables.Chain{Name: "input", Table: table}
+				rule := &nftables.Rule{Table: table, Chain: chain}
 
-	restore, err := firewall.SaveAndRestore(ctx)
-	// SaveAndRestore requires nftables connection, may fail in test env
-	if err != nil {
-		assert.Nil(t, restore)
-		assert.Contains(t, err.Error(), "creating nftables connection")
-		return
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
+				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
+				mockConn.EXPECT().GetRules(table, chain).Return([]*nftables.Rule{rule}, nil)
+
+				return func() (conn, error) { return mockConn, nil }
+			},
+			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+
+				mockConn.EXPECT().FlushRuleset()
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(t *nftables.Table) *nftables.Table {
+					return t
+				})
+				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(c *nftables.Chain) *nftables.Chain {
+					return c
+				})
+				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(r *nftables.Rule) *nftables.Rule {
+					return r
+				})
+				mockConn.EXPECT().Flush().Return(nil)
+
+				return func() (conn, error) { return mockConn, nil }
+			},
+		},
+		"restore_warns_on_dial_error": {
+			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return(nil, nil)
+				return func() (conn, error) { return mockConn, nil }
+			},
+			setupMockLogger: func(ctrl *gomock.Controller) Logger {
+				logger := NewMockLogger(ctrl)
+				logger.EXPECT().Warnf(gomock.Any(), gomock.Any())
+				return logger
+			},
+			setupSecondConn: func(_ *gomock.Controller) dialFunc {
+				return func() (conn, error) { return nil, assert.AnError }
+			},
+		},
+		"restore_warns_on_restore_error": {
+			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{{Name: "filter"}}, nil)
+				mockConn.EXPECT().ListChains().Return(nil, nil)
+				return func() (conn, error) { return mockConn, nil }
+			},
+			setupMockLogger: func(ctrl *gomock.Controller) Logger {
+				logger := NewMockLogger(ctrl)
+				logger.EXPECT().Warnf(gomock.Any(), gomock.Any())
+				return logger
+			},
+			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().FlushRuleset()
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(t *nftables.Table) *nftables.Table {
+					return t
+				})
+				mockConn.EXPECT().Flush().Return(assert.AnError)
+				return func() (conn, error) { return mockConn, nil }
+			},
+		},
 	}
-	require.NotNil(t, restore)
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			firstConn := testCase.setupFirstConn(ctrl)
+			var dialFuncs []dialFunc
+			dialFuncs = append(dialFuncs, firstConn)
+
+			if testCase.setupSecondConn != nil {
+				secondConn := testCase.setupSecondConn(ctrl)
+				dialFuncs = append(dialFuncs, secondConn)
+			} else {
+				dialFuncs = append(dialFuncs, firstConn)
+			}
+
+			dialFunc := func() (conn, error) {
+				if len(dialFuncs) > 0 {
+					df := dialFuncs[0]
+					dialFuncs = dialFuncs[1:]
+					return df()
+				}
+				return nil, assert.AnError
+			}
+
+			var logger Logger
+			if testCase.setupMockLogger != nil {
+				logger = testCase.setupMockLogger(ctrl)
+			} else {
+				logger = NewMockLogger(ctrl)
+			}
+			firewall := &Firewall{logger: logger, dialFunc: dialFunc}
+
+			ctx := t.Context()
+			restore, err := firewall.SaveAndRestore(ctx)
+
+			if testCase.errorContains != "" {
+				assert.Error(t, err)
+				if testCase.errorContains != "" {
+					assert.ErrorContains(t, err, testCase.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.NotNil(t, restore)
+
+			// Call restore if it should work
+			if testCase.setupSecondConn != nil {
+				restore(ctx)
+			}
+		})
+	}
 }
 
 func Test_saveTables(t *testing.T) {
 	t.Parallel()
 
-	conn, err := nftables.New()
-	require.NoError(t, err)
+	testCases := map[string]struct {
+		setupConn func(ctrl *gomock.Controller) conn
 
-	// saveTables reads from kernel state via GetTable().
-	// Without root access or real nftables backend, tables will be empty.
-	// Test that it doesn't panic and handles empty state.
-	savedTables, err := saveTables(conn)
-
-	// saveTables returns empty tables when kernel has no tables or connection fails
-	// This is expected behavior in non-root test environment
-	assert.NoError(t, err)
-	// savedTables may be empty in test environment - that's OK
-	// The important thing is saveTables doesn't panic
-	_ = savedTables
-}
-
-func Test_restoreTables(t *testing.T) {
-	t.Parallel()
-
-	// Create mock saved state
-	st := savedTable{
-		table: &nftables.Table{
-			Family: nftables.TableFamilyINet,
-			Name:   "test_table",
-		},
-		chains: []savedChain{
-			{
-				chain: &nftables.Chain{
-					Name:     "test_chain",
-					Type:     nftables.ChainTypeFilter,
-					Hooknum:  nftables.ChainHookInput,
-					Priority: nftables.ChainPriorityFilter,
-				},
-				rules: nil,
+		errorContains  string
+		expectedTables int
+	}{
+		"list_tables_error": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return(nil, assert.AnError)
+				return mockConn
 			},
+			errorContains: "assert.AnError",
+		},
+		"empty_tables": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				mockConn.EXPECT().ListTables().Return(nil, nil)
+				return mockConn
+			},
+
+			expectedTables: 0,
+		},
+		"table_with_chains_and_rules": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
+				chain := &nftables.Chain{Name: "input", Table: table}
+				rule := &nftables.Rule{Table: table, Chain: chain}
+
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
+				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
+				mockConn.EXPECT().GetRules(table, chain).Return([]*nftables.Rule{rule}, nil)
+
+				return mockConn
+			},
+
+			expectedTables: 1,
+		},
+		"list_chains_error": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
+
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
+				mockConn.EXPECT().ListChains().Return(nil, assert.AnError)
+
+				return mockConn
+			},
+			errorContains: "assert.AnError",
+		},
+		"get_rules_error": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
+				chain := &nftables.Chain{Name: "input", Table: table}
+
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
+				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
+				mockConn.EXPECT().GetRules(table, chain).Return(nil, assert.AnError)
+
+				return mockConn
+			},
+			errorContains: "getting rules for chain",
+		},
+		"filter_chains_by_table": {
+			setupConn: func(ctrl *gomock.Controller) conn {
+				mockConn := NewMockConn(ctrl)
+				filterTable := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
+				natTable := &nftables.Table{Name: "nat", Family: nftables.TableFamilyINet}
+				filterChain := &nftables.Chain{Name: "input", Table: filterTable}
+				natChain := &nftables.Chain{Name: "prerouting", Table: natTable}
+				rule := &nftables.Rule{Table: filterTable, Chain: filterChain}
+
+				mockConn.EXPECT().ListTables().Return([]*nftables.Table{filterTable, natTable}, nil)
+				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{filterChain, natChain}, nil).Times(2)
+				mockConn.EXPECT().GetRules(filterTable, filterChain).Return([]*nftables.Rule{rule}, nil)
+				mockConn.EXPECT().GetRules(natTable, natChain).Return(nil, nil)
+
+				return mockConn
+			},
+
+			expectedTables: 2,
 		},
 	}
 
-	conn, err := nftables.New()
-	require.NoError(t, err)
-	err = restoreTables(conn, []savedTable{st})
-	// May fail without root access, but structure should be correct
-	if err != nil {
-		assert.Error(t, err)
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			conn := testCase.setupConn(ctrl)
+
+			result, err := saveTables(conn)
+
+			if testCase.errorContains != "" {
+				assert.Error(t, err)
+				if testCase.errorContains != "" {
+					assert.ErrorContains(t, err, testCase.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Len(t, result, testCase.expectedTables)
+			}
+		})
 	}
-}
-
-func Test_restoreFunction_LogsWarningOnConnectionError(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	logger := NewMockLogger(ctrl)
-
-	// Expect Warnf to be called when restore fails due to connection error
-	logger.EXPECT().Warnf(gomock.Any(), gomock.Any()).AnyTimes()
-
-	buildInfo := (*debug.BuildInfo)(nil)
-	firewall := New(logger, buildInfo)
-
-	// Create a restore function directly
-	restore := func(_ context.Context) {
-		conn, err := nftables.New()
-		if err != nil {
-			firewall.logger.Warnf("creating nftables connection for restore: %s", err)
-			return
-		}
-		_ = conn
-	}
-
-	// Call the restore function - should log warning if connection fails
-	// but not panic
-	ctx := t.Context()
-	restore(ctx)
 }
