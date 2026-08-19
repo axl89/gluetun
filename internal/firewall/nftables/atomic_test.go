@@ -1,261 +1,217 @@
 package nftables
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
 
-func Test_SaveAndRestore(t *testing.T) {
-	t.Parallel()
+func testRule(table *nftables.Table, chain *nftables.Chain, handle uint64) *nftables.Rule {
+	return &nftables.Rule{
+		Table: table, Chain: chain, Handle: handle,
+		Exprs: []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}},
+	}
+}
 
-	testCases := map[string]struct {
-		setupFirstConn  func(ctrl *gomock.Controller) dialFunc
-		setupSecondConn func(ctrl *gomock.Controller) dialFunc
-		setupMockLogger func(ctrl *gomock.Controller) Logger
-		errorContains   string
-	}{
-		"dial_error_on_save": {
-			setupFirstConn: func(_ *gomock.Controller) dialFunc {
-				return func() (conn, error) { return nil, assert.AnError }
-			},
-			errorContains: "creating nftables connection",
-		},
-		"save_error_list_tables": {
-			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return(nil, assert.AnError)
-				return func() (conn, error) { return mockConn, nil }
-			},
-			errorContains: "saving nftables state",
-		},
-		"success_save_and_restore_no_tables": {
-			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return(nil, nil)
-				return func() (conn, error) { return mockConn, nil }
-			},
-			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().FlushRuleset()
-				mockConn.EXPECT().Flush().Return(nil)
-				return func() (conn, error) { return mockConn, nil }
-			},
-		},
-		"success_save_restore_with_tables_and_chains": {
-			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
-				chain := &nftables.Chain{Name: "input", Table: table}
-				rule := &nftables.Rule{Table: table, Chain: chain}
+// sampleState is the set of tables, chains, and rules used by save/restore tests.
+type sampleState struct {
+	filterTable     *nftables.Table
+	natTable        *nftables.Table
+	inputChain      *nftables.Chain
+	forwardChain    *nftables.Chain
+	outputChain     *nftables.Chain
+	preroutingChain *nftables.Chain
+	inputRules      []*nftables.Rule
+	preroutingRules []*nftables.Rule
+}
 
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
-				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
-				mockConn.EXPECT().GetRules(table, chain).Return([]*nftables.Rule{rule}, nil)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
-			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().FlushRuleset()
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(t *nftables.Table) *nftables.Table {
-					return t
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(c *nftables.Chain) *nftables.Chain {
-					return c
-				})
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(r *nftables.Rule) *nftables.Rule {
-					return r
-				})
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
-		},
-		"restore_warns_on_dial_error": {
-			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return(nil, nil)
-				return func() (conn, error) { return mockConn, nil }
-			},
-			setupMockLogger: func(ctrl *gomock.Controller) Logger {
-				logger := NewMockLogger(ctrl)
-				logger.EXPECT().Warnf(gomock.Any(), gomock.Any())
-				return logger
-			},
-			setupSecondConn: func(_ *gomock.Controller) dialFunc {
-				return func() (conn, error) { return nil, assert.AnError }
-			},
-		},
-		"restore_warns_on_restore_error": {
-			setupFirstConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{{Name: "filter"}}, nil)
-				mockConn.EXPECT().ListChains().Return(nil, nil)
-				return func() (conn, error) { return mockConn, nil }
-			},
-			setupMockLogger: func(ctrl *gomock.Controller) Logger {
-				logger := NewMockLogger(ctrl)
-				logger.EXPECT().Warnf(gomock.Any(), gomock.Any())
-				return logger
-			},
-			setupSecondConn: func(ctrl *gomock.Controller) dialFunc {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().FlushRuleset()
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(t *nftables.Table) *nftables.Table {
-					return t
-				})
-				mockConn.EXPECT().Flush().Return(assert.AnError)
-				return func() (conn, error) { return mockConn, nil }
-			},
-		},
+// buildSampleState creates a filter table (input/forward/output chains) and a
+// nat table (prerouting chain), with a couple of rules, for save/restore tests.
+func buildSampleState() sampleState {
+	filterTable := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	natTable := &nftables.Table{Family: nftables.TableFamilyINet, Name: natTableName}
+	inputChain := &nftables.Chain{
+		Name: inputChainName, Table: filterTable, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookInput, Priority: nftables.ChainPriorityFilter,
+	}
+	forwardChain := &nftables.Chain{
+		Name: forwardChainName, Table: filterTable, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter,
+	}
+	outputChain := &nftables.Chain{
+		Name: outputChainName, Table: filterTable, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityFilter,
+	}
+	preroutingChain := &nftables.Chain{
+		Name: preroutingChainName, Table: natTable, Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest,
 	}
 
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-
-			firstConn := testCase.setupFirstConn(ctrl)
-			var dialFuncs []dialFunc
-			dialFuncs = append(dialFuncs, firstConn)
-
-			if testCase.setupSecondConn != nil {
-				secondConn := testCase.setupSecondConn(ctrl)
-				dialFuncs = append(dialFuncs, secondConn)
-			} else {
-				dialFuncs = append(dialFuncs, firstConn)
-			}
-
-			dialFunc := func() (conn, error) {
-				if len(dialFuncs) > 0 {
-					df := dialFuncs[0]
-					dialFuncs = dialFuncs[1:]
-					return df()
-				}
-				return nil, assert.AnError
-			}
-
-			var logger Logger
-			if testCase.setupMockLogger != nil {
-				logger = testCase.setupMockLogger(ctrl)
-			} else {
-				logger = NewMockLogger(ctrl)
-			}
-			firewall := &Firewall{logger: logger, dialFunc: dialFunc}
-
-			ctx := t.Context()
-			restore, err := firewall.SaveAndRestore(ctx)
-
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-				return
-			}
-
-			assert.NoError(t, err)
-			assert.NotNil(t, restore)
-
-			// Call restore if it should work
-			if testCase.setupSecondConn != nil {
-				restore(ctx)
-			}
-		})
+	inputRules := []*nftables.Rule{
+		testRule(filterTable, inputChain, 10),
+		testRule(filterTable, inputChain, 11),
+	}
+	preroutingRules := []*nftables.Rule{
+		testRule(natTable, preroutingChain, 20),
+	}
+	return sampleState{
+		filterTable:     filterTable,
+		natTable:        natTable,
+		inputChain:      inputChain,
+		forwardChain:    forwardChain,
+		outputChain:     outputChain,
+		preroutingChain: preroutingChain,
+		inputRules:      inputRules,
+		preroutingRules: preroutingRules,
 	}
 }
 
 func Test_saveTables(t *testing.T) {
 	t.Parallel()
 
+	state := buildSampleState()
+	filterTable := state.filterTable
+	natTable := state.natTable
+	inputChain := state.inputChain
+	forwardChain := state.forwardChain
+	outputChain := state.outputChain
+	preroutingChain := state.preroutingChain
+	inputRules := state.inputRules
+	preroutingRules := state.preroutingRules
+
+	ctrl := gomock.NewController(t)
+	mockConn := NewMockConn(ctrl)
+
+	mockConn.EXPECT().ListTables().Return([]*nftables.Table{filterTable, natTable}, nil)
+	mockConn.EXPECT().ListChains().Return(
+		[]*nftables.Chain{inputChain, forwardChain, outputChain, preroutingChain}, nil,
+	)
+	mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ *nftables.Table, chain *nftables.Chain) ([]*nftables.Rule, error) {
+			switch chain.Name {
+			case inputChainName:
+				return inputRules, nil
+			case preroutingChainName:
+				return preroutingRules, nil
+			default:
+				return nil, nil
+			}
+		},
+	).Times(4)
+
+	savedTables, err := saveTables(mockConn)
+
+	assert.NoError(t, err)
+	require.Len(t, savedTables, 2)
+
+	assert.Equal(t, filterTable, savedTables[0].table)
+	require.Len(t, savedTables[0].chains, 3)
+	assert.Equal(t, inputRules, savedTables[0].chains[0].rules)
+	assert.Empty(t, savedTables[0].chains[1].rules)
+	assert.Empty(t, savedTables[0].chains[2].rules)
+
+	assert.Equal(t, natTable, savedTables[1].table)
+	require.Len(t, savedTables[1].chains, 1)
+	assert.Equal(t, preroutingRules, savedTables[1].chains[0].rules)
+}
+
+func Test_restoreTables(t *testing.T) {
+	t.Parallel()
+
+	state := buildSampleState()
+	filterTable := state.filterTable
+	natTable := state.natTable
+	inputChain := state.inputChain
+	preroutingChain := state.preroutingChain
+	inputRules := state.inputRules
+	preroutingRules := state.preroutingRules
+
+	savedTables := []savedTable{
+		{
+			table: filterTable,
+			chains: []savedChain{
+				{chain: inputChain, rules: inputRules},
+			},
+		},
+		{
+			table: natTable,
+			chains: []savedChain{
+				{chain: preroutingChain, rules: preroutingRules},
+			},
+		},
+	}
+
+	ctrl := gomock.NewController(t)
+	mockConn := NewMockConn(ctrl)
+
+	var restoredChains []*nftables.Chain
+	var addedRules []*nftables.Rule
+
+	mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+		return table
+	}).Times(2)
+	mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+		restoredChains = append(restoredChains, chain)
+		return chain
+	}).Times(2)
+	mockConn.EXPECT().FlushChain(gomock.Any()).Times(2)
+	mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+		addedRules = append(addedRules, rule)
+		return rule
+	}).Times(3)
+	mockConn.EXPECT().Flush().Return(nil)
+
+	err := restoreTables(mockConn, savedTables)
+
+	assert.NoError(t, err)
+
+	// Two chains restored (input and prerouting).
+	require.Len(t, restoredChains, 2)
+	assert.Equal(t, inputChainName, restoredChains[0].Name)
+	assert.Equal(t, filterTable, restoredChains[0].Table)
+	assert.Equal(t, preroutingChainName, restoredChains[1].Name)
+	assert.Equal(t, natTable, restoredChains[1].Table)
+
+	// Three rules re-added (2 input + 1 prerouting), all with handle 0 and
+	// pointing at the restored chain.
+	require.Len(t, addedRules, 3)
+	for i, rule := range addedRules {
+		assert.Zero(t, rule.Handle)
+		if i < 2 {
+			assert.Equal(t, restoredChains[0], rule.Chain)
+			assert.Equal(t, inputRules[i].Exprs, rule.Exprs)
+		} else {
+			assert.Equal(t, restoredChains[1], rule.Chain)
+			assert.Equal(t, preroutingRules[i-2].Exprs, rule.Exprs)
+		}
+	}
+
+	// The saved state must not be mutated, so restore can be called again.
+	assert.Equal(t, uint64(10), inputRules[0].Handle)
+	assert.Equal(t, inputChain, inputRules[0].Chain)
+}
+
+func Test_SaveAndRestore(t *testing.T) {
+	t.Parallel()
+
+	state := buildSampleState()
+	filterTable := state.filterTable
+	inputChain := state.inputChain
+	inputRules := state.inputRules
+
 	testCases := map[string]struct {
-		setupConn func(ctrl *gomock.Controller) conn
-
-		errorContains  string
-		expectedTables int
+		restoreFlushError error
+		expectWarning     bool
 	}{
-		"list_tables_error": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return(nil, assert.AnError)
-				return mockConn
-			},
-			errorContains: "assert.AnError",
-		},
-		"empty_tables": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				mockConn.EXPECT().ListTables().Return(nil, nil)
-				return mockConn
-			},
-
-			expectedTables: 0,
-		},
-		"table_with_chains_and_rules": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
-				chain := &nftables.Chain{Name: "input", Table: table}
-				rule := &nftables.Rule{Table: table, Chain: chain}
-
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
-				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
-				mockConn.EXPECT().GetRules(table, chain).Return([]*nftables.Rule{rule}, nil)
-
-				return mockConn
-			},
-
-			expectedTables: 1,
-		},
-		"list_chains_error": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
-
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
-				mockConn.EXPECT().ListChains().Return(nil, assert.AnError)
-
-				return mockConn
-			},
-			errorContains: "assert.AnError",
-		},
-		"get_rules_error": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				table := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
-				chain := &nftables.Chain{Name: "input", Table: table}
-
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{table}, nil)
-				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{chain}, nil)
-				mockConn.EXPECT().GetRules(table, chain).Return(nil, assert.AnError)
-
-				return mockConn
-			},
-			errorContains: "getting rules for chain",
-		},
-		"filter_chains_by_table": {
-			setupConn: func(ctrl *gomock.Controller) conn {
-				mockConn := NewMockConn(ctrl)
-				filterTable := &nftables.Table{Name: "filter", Family: nftables.TableFamilyINet}
-				natTable := &nftables.Table{Name: "nat", Family: nftables.TableFamilyINet}
-				filterChain := &nftables.Chain{Name: "input", Table: filterTable}
-				natChain := &nftables.Chain{Name: "prerouting", Table: natTable}
-				rule := &nftables.Rule{Table: filterTable, Chain: filterChain}
-
-				mockConn.EXPECT().ListTables().Return([]*nftables.Table{filterTable, natTable}, nil)
-				mockConn.EXPECT().ListChains().Return([]*nftables.Chain{filterChain, natChain}, nil).Times(2)
-				mockConn.EXPECT().GetRules(filterTable, filterChain).Return([]*nftables.Rule{rule}, nil)
-				mockConn.EXPECT().GetRules(natTable, natChain).Return(nil, nil)
-
-				return mockConn
-			},
-
-			expectedTables: 2,
+		"success": {},
+		"restore_flush_error_logs_warning": {
+			restoreFlushError: errors.New("restore flush failed"),
+			expectWarning:     true,
 		},
 	}
 
@@ -264,19 +220,88 @@ func Test_saveTables(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			conn := testCase.setupConn(ctrl)
-
-			result, err := saveTables(conn)
-
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-				assert.Len(t, result, testCase.expectedTables)
+			mockConn := NewMockConn(ctrl)
+			mockLogger := NewMockLogger(ctrl)
+			f := &Firewall{
+				dialFunc: func() (conn, error) { return mockConn, nil },
+				logger:   mockLogger,
 			}
+
+			// Save phase.
+			mockConn.EXPECT().ListTables().Return([]*nftables.Table{filterTable}, nil)
+			mockConn.EXPECT().ListChains().Return([]*nftables.Chain{inputChain}, nil)
+			mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(inputRules, nil)
+
+			// Restore phase (called by the returned restore function).
+			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+				return table
+			})
+			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+				return chain
+			})
+			mockConn.EXPECT().FlushChain(gomock.Any())
+			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+				return rule
+			}).Times(2)
+			mockConn.EXPECT().Flush().Return(testCase.restoreFlushError)
+
+			if testCase.expectWarning {
+				mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any()).
+					Do(func(format string, _ ...any) {
+						assert.Contains(t, format, "restoring nftables state")
+					})
+			}
+
+			restore, err := f.SaveAndRestore(t.Context())
+			require.NoError(t, err)
+			require.NotNil(t, restore)
+
+			restore(t.Context())
 		})
 	}
+}
+
+// Test_SaveAndRestore_restore_idempotent verifies that the returned restore
+// function can be called multiple times without mutating the saved state.
+func Test_SaveAndRestore_restore_idempotent(t *testing.T) {
+	t.Parallel()
+
+	state := buildSampleState()
+	filterTable := state.filterTable
+	inputChain := state.inputChain
+	inputRules := state.inputRules
+
+	ctrl := gomock.NewController(t)
+	mockConn := NewMockConn(ctrl)
+	f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
+
+	// Save phase.
+	mockConn.EXPECT().ListTables().Return([]*nftables.Table{filterTable}, nil)
+	mockConn.EXPECT().ListChains().Return([]*nftables.Chain{inputChain}, nil)
+	mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(inputRules, nil)
+
+	// Two restore phases.
+	for range 2 {
+		mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+			return table
+		})
+		mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+			return chain
+		})
+		mockConn.EXPECT().FlushChain(gomock.Any())
+		mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+			return rule
+		}).Times(2)
+		mockConn.EXPECT().Flush().Return(nil)
+	}
+
+	restore, err := f.SaveAndRestore(t.Context())
+	require.NoError(t, err)
+
+	restore(t.Context())
+	restore(t.Context())
+
+	// Saved state is intact after two restores.
+	assert.Equal(t, uint64(10), inputRules[0].Handle)
+	assert.Equal(t, inputChain, inputRules[0].Chain)
 }

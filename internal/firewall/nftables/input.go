@@ -9,6 +9,8 @@ import (
 	"github.com/google/nftables/expr"
 )
 
+// AcceptInputThroughInterface accepts all input traffic coming through the
+// given interface.
 func (f *Firewall) AcceptInputThroughInterface(_ context.Context, intf string) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -18,41 +20,21 @@ func (f *Firewall) AcceptInputThroughInterface(_ context.Context, intf string) e
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _ := setupFilterWithBaseChains(conn)
-
-	rule := &nftables.Rule{
-		Table: table,
-		Chain: inputChain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyIIFNAME,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte(intf + "\x00"),
-			},
-			&expr.Verdict{
-				Kind: expr.VerdictAccept,
-			},
-		},
-	}
-
-	conn.AddRule(rule)
-
-	err = conn.Flush()
+	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("flushing: %w", err)
+		return fmt.Errorf("setting up filter table: %w", err)
 	}
 
-	return nil
+	exprs := append(inputInterfaceExprs(intf), &expr.Verdict{Kind: expr.VerdictAccept})
+
+	return f.addOrRemoveRule(conn, table, inputChain, exprs, false)
 }
 
-// AcceptInputToPort accepts incoming traffic on the specified port, for both TCP and UDP
-// protocols, on the interface intf. If intf is empty or "*", the interface is not used as a filter.
-// If remove is true, the rule is removed instead of added. This is used for port forwarding, with
-// intf set to the VPN tunnel interface.
+// AcceptInputToPort accepts incoming traffic on the specified port, for both
+// TCP and UDP protocols, on the interface intf. If intf is empty or "*", the
+// interface is not used as a filter. If remove is true, the rules are removed
+// instead of added. This is used for port forwarding, with intf set to the VPN
+// tunnel interface.
 func (f *Firewall) AcceptInputToPort(_ context.Context, intf string, port uint16, remove bool) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -62,54 +44,50 @@ func (f *Firewall) AcceptInputToPort(_ context.Context, intf string, port uint16
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _ := setupFilterWithBaseChains(conn)
-	portBytes := []byte{byte(port >> 8), byte(port)} //nolint:mnd,gosec // network byte order
-	const tcp, udp uint8 = 6, 17
-	protocols := []uint8{tcp, udp}
+	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
+	if err != nil {
+		return fmt.Errorf("setting up filter table: %w", err)
+	}
 
-	for _, protocol := range protocols {
-		const maxExprsLen = 7
-		exprs := make([]expr.Any, 0, maxExprsLen)
-		if intf != "" && intf != "*" {
-			exprs = append(exprs,
-				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
-			)
-		}
-		exprs = append(exprs,
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 9, Len: 1}, //nolint:mnd
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{protocol}},
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2}, //nolint:mnd
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: portBytes},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		)
+	var addedRules []*nftables.Rule
+	var deletedRules []*nftables.Rule
+	for _, protocol := range [2]uint8{protocolTCP, protocolUDP} {
+		exprs := append(inputInterfaceExprs(intf), protocolExprs(protocol)...)
+		exprs = append(exprs, destinationPortExprs(port)...)
+		exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictAccept})
 
-		rule := &nftables.Rule{
-			Table: table,
-			Chain: inputChain,
-			Exprs: exprs,
-		}
+		rule := &nftables.Rule{Table: table, Chain: inputChain, Exprs: exprs}
 
 		if !remove {
 			conn.AddRule(rule)
-			f.rules = append(f.rules, rule)
+			addedRules = append(addedRules, rule)
 			continue
 		}
-		err = f.deleteRule(conn, rule)
-		if err != nil {
+
+		if err := f.deleteRule(conn, rule); err != nil {
 			return fmt.Errorf("deleting rule: %w", err)
 		}
+		deletedRules = append(deletedRules, rule)
 	}
 
-	err = conn.Flush()
-	if err != nil {
-		f.rules = f.rules[:len(f.rules)-len(protocols)]
+	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("flushing: %w", err)
+	}
+
+	if !remove {
+		f.rules = append(f.rules, addedRules...)
+	} else {
+		for _, rule := range deletedRules {
+			f.untrackRule(rule)
+		}
 	}
 
 	return nil
 }
 
+// AcceptInputToSubnet accepts incoming traffic whose destination is the given
+// subnet, on the interface intf. If intf is empty or "*", the interface is
+// not used as a filter.
 func (f *Firewall) AcceptInputToSubnet(_ context.Context, intf string, subnet netip.Prefix) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -119,52 +97,13 @@ func (f *Firewall) AcceptInputToSubnet(_ context.Context, intf string, subnet ne
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _ := setupFilterWithBaseChains(conn)
-
-	const maxExprsLen = 5
-	exprs := make([]expr.Any, 0, maxExprsLen)
-
-	if intf != "" && intf != "*" {
-		exprs = append(exprs,
-			&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(intf + "\x00")},
-		)
-	}
-
-	var payloadOffset uint32
-	if subnet.Addr().Is4() {
-		payloadOffset = 16
-	} else {
-		payloadOffset = 24
-	}
-
-	exprs = append(exprs,
-		&expr.Payload{
-			DestRegister: 1,
-			Base:         expr.PayloadBaseNetworkHeader,
-			Offset:       payloadOffset,
-			Len:          uint32(len(subnet.Addr().AsSlice())), //nolint:gosec
-		},
-		&expr.Cmp{
-			Op:       expr.CmpOpEq,
-			Register: 1,
-			Data:     subnet.Addr().AsSlice(),
-		},
-		&expr.Verdict{Kind: expr.VerdictAccept},
-	)
-
-	rule := &nftables.Rule{
-		Table: table,
-		Chain: inputChain,
-		Exprs: exprs,
-	}
-
-	conn.AddRule(rule)
-
-	err = conn.Flush()
+	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("flushing: %w", err)
+		return fmt.Errorf("setting up filter table: %w", err)
 	}
 
-	return nil
+	exprs := append(inputInterfaceExprs(intf), destinationSubnetExprs(subnet)...)
+	exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictAccept})
+
+	return f.addOrRemoveRule(conn, table, inputChain, exprs, false)
 }

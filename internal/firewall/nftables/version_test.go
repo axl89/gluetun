@@ -1,41 +1,38 @@
 package nftables
 
 import (
-	"runtime/debug"
+	"errors"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_Version(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		buildInfo   *debug.BuildInfo
-		expectedErr bool
+		output        string
+		runError      error
+		expected      string
+		expectedError string
 	}{
-		"dependency_found": {
-			buildInfo: &debug.BuildInfo{
-				Deps: []*debug.Module{
-					{Path: "github.com/google/nftables", Version: "v0.2.0"},
-					{Path: "other/dep", Version: "v1.0.0"},
-				},
-			},
-			expectedErr: false,
+		"success": {
+			output:   "nftables v1.1.5",
+			expected: "nftables v1.1.5",
 		},
-		"dependency_not_found": {
-			buildInfo: &debug.BuildInfo{
-				Deps: []*debug.Module{
-					{Path: "other/dep", Version: "v1.0.0"},
-				},
-			},
-			expectedErr: true,
+		"success_with_trailing_whitespace": {
+			output:   "nftables v1.1.5\n",
+			expected: "nftables v1.1.5",
 		},
-		"empty_deps": {
-			buildInfo: &debug.BuildInfo{
-				Deps: []*debug.Module{},
-			},
-			expectedErr: true,
+		"empty_output": {
+			output:        "   \n",
+			expectedError: "nft version string is empty",
+		},
+		"run_error": {
+			runError:      errors.New("exec failed"),
+			expectedError: "running nft --version: exec failed",
 		},
 	}
 
@@ -43,18 +40,38 @@ func Test_Version(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			firewall := &Firewall{buildInfo: testCase.buildInfo}
+			ctrl := gomock.NewController(t)
+			mockRunner := NewMockCmdRunner(ctrl)
+			f := &Firewall{runner: mockRunner}
 
-			ctx := t.Context()
-			version, err := firewall.Version(ctx)
+			var captured *exec.Cmd
+			mockRunner.EXPECT().Run(gomock.Any()).DoAndReturn(
+				func(cmd *exec.Cmd) (string, error) {
+					captured = cmd
+					return testCase.output, testCase.runError
+				},
+			)
 
-			if testCase.expectedErr {
-				assert.Error(t, err)
-				assert.Empty(t, version)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, "v0.2.0 (google/nftables)", version)
+			version, err := f.Version(t.Context())
+
+			// The command must be `nft --version`.
+			requireCmd(t, captured, "nft", "--version")
+
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+				return
 			}
+			assert.NoError(t, err)
+			assert.Equal(t, testCase.expected, version)
 		})
 	}
+}
+
+func requireCmd(t *testing.T, cmd *exec.Cmd, expected ...string) {
+	t.Helper()
+	if cmd == nil {
+		assert.Fail(t, "expected a command to be run")
+		return
+	}
+	assert.Equal(t, expected, cmd.Args)
 }

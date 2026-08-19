@@ -2,10 +2,8 @@ package firewall
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
-	"runtime/debug"
 	"sync"
 
 	"github.com/qdm12/gluetun/internal/firewall/iptables"
@@ -52,11 +50,7 @@ func NewConfig(ctx context.Context, implementation string,
 		}
 		customRulesPath = "/iptables/post-rules.txt"
 	case "nftables":
-		buildInfo, ok := debug.ReadBuildInfo()
-		if !ok {
-			return nil, errors.New("failed reading debug build info")
-		}
-		impl = nftables.New(logger, buildInfo)
+		impl = nftables.New(runner, logger)
 		customRulesPath = "/gluetun/firewall/nftables/post-rules.txt"
 	default:
 		return nil, fmt.Errorf("unknown firewall implementation: %s", implementation)

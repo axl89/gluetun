@@ -110,16 +110,16 @@ func (mr *MockConnMockRecorder) Flush() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Flush", reflect.TypeOf((*MockConn)(nil).Flush))
 }
 
-// FlushRuleset mocks base method.
-func (m *MockConn) FlushRuleset() {
+// FlushChain mocks base method.
+func (m *MockConn) FlushChain(chain *nftables.Chain) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "FlushRuleset")
+	m.ctrl.Call(m, "FlushChain", chain)
 }
 
-// FlushRuleset indicates an expected call of FlushRuleset.
-func (mr *MockConnMockRecorder) FlushRuleset() *gomock.Call {
+// FlushChain indicates an expected call of FlushChain.
+func (mr *MockConnMockRecorder) FlushChain(chain any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlushRuleset", reflect.TypeOf((*MockConn)(nil).FlushRuleset))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlushChain", reflect.TypeOf((*MockConn)(nil).FlushChain), chain)
 }
 
 // GetRules mocks base method.

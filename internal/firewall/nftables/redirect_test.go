@@ -1,6 +1,7 @@
 package nftables
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/google/nftables"
@@ -9,212 +10,147 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func Test_RedirectPort(t *testing.T) {
+func testNatTable() *nftables.Table {
+	return &nftables.Table{Family: nftables.TableFamilyINet, Name: natTableName}
+}
+
+func testNatPreroutingChain() *nftables.Chain {
+	return &nftables.Chain{
+		Name: preroutingChainName, Table: testNatTable(), Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest,
+	}
+}
+
+func testFilterAndNatTables() []*nftables.Table {
+	return append(testFilterTables(), testNatTable())
+}
+
+func testFilterAndNatChains() []*nftables.Chain {
+	return append(testFilterChainsAll(), testNatPreroutingChain())
+}
+
+// expected-value builders mirroring the production redirect rule composition.
+
+func expectedPrerouteExprs(intf string, protocol uint8,
+	sourcePort, destinationPort uint16,
+) []expr.Any {
+	destinationPortData := make([]byte, 2)
+	binary.BigEndian.PutUint16(destinationPortData, destinationPort)
+	exprs := append(inputInterfaceExprs(intf), protocolExprs(protocol)...)
+	exprs = append(exprs, destinationPortExprs(sourcePort)...)
+	exprs = append(exprs,
+		&expr.Immediate{Register: 1, Data: destinationPortData},
+		&expr.NAT{
+			Type:        expr.NATTypeDestNAT,
+			Family:      uint32(nftables.TableFamilyINet),
+			RegProtoMin: 1,
+			RegProtoMax: 1,
+			Specified:   true,
+		},
+	)
+	return exprs
+}
+
+func expectedRedirectInputExprs(intf string, protocol uint8, destinationPort uint16) []expr.Any {
+	exprs := append(inputInterfaceExprs(intf), protocolExprs(protocol)...)
+	exprs = append(exprs, destinationPortExprs(destinationPort)...)
+	return append(exprs, &expr.Verdict{Kind: expr.VerdictAccept})
+}
+
+func Test_buildRedirectPrerouteRule(t *testing.T) {
 	t.Parallel()
 
+	natTable := testNatTable()
+	preroutingChain := testNatPreroutingChain()
+	sourcePort, destinationPort := uint16(12345), uint16(51820)
+
 	testCases := map[string]struct {
-		intf            string
-		sourcePort      uint16
-		destinationPort uint16
-		remove          bool
-		setupFirewall   func() *Firewall
-		setupMockConn   func() (dialFunc, *MockConn)
-
-		errorContains     string
-		expectedRuleCount int
+		intf     string
+		protocol uint8
 	}{
-		"dial_error": {
-			intf:            "eth0",
-			sourcePort:      80,
-			destinationPort: 8080,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				return func() (conn, error) { return nil, assert.AnError }, nil
-			},
-			errorContains: "creating nftables connection",
-		},
-		"flush_error_add_mode": {
-			intf:            "eth0",
-			sourcePort:      80,
-			destinationPort: 8080,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).Times(2)
-				mockConn.EXPECT().AddChain(gomock.Any()).Times(4)
-				mockConn.EXPECT().AddRule(gomock.Any()).Times(4)
-				mockConn.EXPECT().Flush().Return(assert.AnError)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-			errorContains: "redirecting source port",
-		},
-		"success_add_redirect_with_interface": {
-			intf:            "tun0",
-			sourcePort:      55555,
-			destinationPort: 1194,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				}).Times(2)
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(4)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-
-					// Preroute rule should have NAT expression
-					if rule.Chain.Name == "prerouting" {
-						// Last expr should be NAT type
-						lastExpr := exprs[len(exprs)-1]
-						natExpr, ok := lastExpr.(*expr.NAT)
-						assert.True(t, ok, "expected NAT expression in preroute rule")
-						assert.Equal(t, expr.NATTypeDestNAT, natExpr.Type)
-					}
-
-					// Input rule should have Verdict Accept
-					if rule.Chain.Name == "input" {
-						lastExpr := exprs[len(exprs)-1]
-						verdictExpr, ok := lastExpr.(*expr.Verdict)
-						assert.True(t, ok, "expected Verdict expression in input rule")
-						assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
-					}
-
-					// Both rules should match interface
-					if rule.Table.Name == "nat" || rule.Table.Name == "filter" {
-						metaExpr, ok := exprs[0].(*expr.Meta)
-						assert.True(t, ok)
-						assert.Equal(t, expr.MetaKeyIIFNAME, metaExpr.Key)
-						cmpExpr, ok := exprs[1].(*expr.Cmp)
-						assert.True(t, ok)
-						assert.Equal(t, []byte("tun0\x00"), cmpExpr.Data)
-					}
-
-					return rule
-				}).Times(4)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-
-			expectedRuleCount: 4,
-		},
-		"success_add_redirect_without_interface": {
-			intf:            "",
-			sourcePort:      80,
-			destinationPort: 8080,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				}).Times(2)
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(4)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-					// Without interface, first expr should be protocol payload, not meta
-					payloadExpr, ok := exprs[0].(*expr.Payload)
-					assert.True(t, ok)
-					assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-					assert.Equal(t, uint32(9), payloadExpr.Offset)
-					return rule
-				}).Times(4)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-
-			expectedRuleCount: 4,
-		},
-		// Note: success_remove_redirect is complex because deleteRule uses DeepEqual
-		// on rules - tested separately in Test_deleteRule
+		"udp_with_interface": {intf: "tun0", protocol: protocolUDP},
+		"tcp_no_interface":   {intf: "", protocol: protocolTCP},
+		"all_interface":      {intf: "*", protocol: protocolUDP},
 	}
 
 	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			var firewall *Firewall
-			if testCase.setupFirewall != nil {
-				firewall = testCase.setupFirewall()
-			}
+			rule := buildRedirectPrerouteRule(natTable, preroutingChain,
+				testCase.intf, testCase.protocol, sourcePort, destinationPort)
 
-			dialFunc, _ := testCase.setupMockConn()
-			if firewall == nil {
-				firewall = &Firewall{dialFunc: dialFunc}
-			} else {
-				firewall.dialFunc = dialFunc
-			}
-
-			ctx := t.Context()
-			err := firewall.RedirectPort(ctx, testCase.intf, testCase.sourcePort, testCase.destinationPort, testCase.remove)
-
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-			if testCase.expectedRuleCount > 0 {
-				assert.Len(t, firewall.rules, testCase.expectedRuleCount)
-			}
+			assert.Equal(t, natTable, rule.Table)
+			assert.Equal(t, preroutingChain, rule.Chain)
+			assert.Equal(t, expectedPrerouteExprs(testCase.intf, testCase.protocol,
+				sourcePort, destinationPort), rule.Exprs)
 		})
 	}
 }
 
-func Test_buildRedirectRule(t *testing.T) {
+func Test_buildRedirectInputRule(t *testing.T) {
 	t.Parallel()
 
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	inputChain := &nftables.Chain{Name: inputChainName, Table: table}
+	destinationPort := uint16(51820)
+
 	testCases := map[string]struct {
-		intf            string
-		protocol        uint8
-		sourcePortBytes []byte
-		destinationPort uint16
-		validateRule    func(t *testing.T, rule *nftables.Rule)
+		intf     string
+		protocol uint8
 	}{
-		"tcp_with_interface": {
-			intf:            "eth0",
-			protocol:        6,
-			sourcePortBytes: []byte{0x00, 0x50},
-			destinationPort: 8080,
-			validateRule: func(t *testing.T, rule *nftables.Rule) {
-				t.Helper()
-				assert.Equal(t, "nat", rule.Table.Name)
-				assert.Equal(t, "prerouting", rule.Chain.Name)
+		"udp_with_interface": {intf: "tun0", protocol: protocolUDP},
+		"tcp_no_interface":   {intf: "", protocol: protocolTCP},
+	}
 
-				exprs := rule.Exprs
-				// Should have NAT expression at the end
-				lastExpr := exprs[len(exprs)-1]
-				natExpr, ok := lastExpr.(*expr.NAT)
-				assert.True(t, ok, "expected NAT expression")
-				assert.Equal(t, expr.NATTypeDestNAT, natExpr.Type)
-			},
-		},
-		"udp_without_interface": {
-			intf:            "",
-			protocol:        17,
-			sourcePortBytes: []byte{0x00, 0x35},
-			destinationPort: 443,
-			validateRule: func(t *testing.T, rule *nftables.Rule) {
-				t.Helper()
-				assert.Equal(t, "nat", rule.Table.Name)
-				assert.Equal(t, "prerouting", rule.Chain.Name)
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-				exprs := rule.Exprs
-				// First expr should be protocol payload, not interface meta
-				payloadExpr, ok := exprs[0].(*expr.Payload)
-				assert.True(t, ok)
-				assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-			},
-		},
+			rule := buildRedirectInputRule(table, inputChain,
+				testCase.intf, testCase.protocol, destinationPort)
+
+			assert.Equal(t, table, rule.Table)
+			assert.Equal(t, inputChain, rule.Chain)
+			assert.Equal(t, expectedRedirectInputExprs(testCase.intf, testCase.protocol,
+				destinationPort), rule.Exprs)
+		})
+	}
+}
+
+func Test_RedirectPort(t *testing.T) {
+	t.Parallel()
+
+	intf := "tun0"
+	sourcePort, destinationPort := uint16(12345), uint16(51820)
+
+	// Pre-built tracked rules for the remove case (as they were added).
+	buildTrackedRules := func() []*nftables.Rule {
+		natTable := testNatTable()
+		preroutingChain := testNatPreroutingChain()
+		filterTable := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+		inputChain := &nftables.Chain{Name: inputChainName, Table: filterTable}
+
+		var rules []*nftables.Rule
+		for _, protocol := range [2]uint8{protocolTCP, protocolUDP} {
+			preroute := &nftables.Rule{
+				Table: natTable, Chain: preroutingChain,
+				Exprs: expectedPrerouteExprs(intf, protocol, sourcePort, destinationPort),
+			}
+			input := &nftables.Rule{
+				Table: filterTable, Chain: inputChain,
+				Exprs: expectedRedirectInputExprs(intf, protocol, destinationPort),
+			}
+			rules = append(rules, preroute, input)
+		}
+		return rules
+	}
+
+	testCases := map[string]struct {
+		remove bool
+	}{
+		"add_new_tables":  {remove: false},
+		"remove_existing": {remove: true},
 	}
 
 	for name, testCase := range testCases {
@@ -223,248 +159,72 @@ func Test_buildRedirectRule(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
-			natTable := &nftables.Table{Name: "nat", Family: nftables.TableFamilyINet}
-			preroutingChain := &nftables.Chain{Name: "prerouting", Table: natTable}
+			if !testCase.remove {
+				// Add path: create the filter and nat tables/chain, add 4 rules.
+				mockConn.EXPECT().ListTables().Return(nil, nil).Times(2)
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+					return table
+				}).Times(2)
+				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+					return chain
+				}).Times(4)
 
-			rule := buildRedirectRule(mockConn, natTable, preroutingChain,
-				testCase.intf, testCase.protocol, testCase.sourcePortBytes, testCase.destinationPort)
+				var addedRules []*nftables.Rule
+				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+					addedRules = append(addedRules, rule)
+					return rule
+				}).Times(4)
+				mockConn.EXPECT().Flush().Return(nil)
 
-			testCase.validateRule(t, rule)
-		})
-	}
-}
+				err := f.RedirectPort(t.Context(), intf, sourcePort, destinationPort, false)
 
-func Test_buildRedirectInputRule(t *testing.T) {
-	t.Parallel()
+				assert.NoError(t, err)
+				assert.Len(t, addedRules, 4)
+				assert.Len(t, f.rules, 4)
 
-	testCases := map[string]struct {
-		intf                 string
-		protocol             uint8
-		destinationPortBytes []byte
-		validateRule         func(t *testing.T, rule *nftables.Rule)
-	}{
-		"with_interface": {
-			intf:                 "eth0",
-			protocol:             6,
-			destinationPortBytes: []byte{0x1f, 0x90},
-			validateRule: func(t *testing.T, rule *nftables.Rule) {
-				t.Helper()
-				assert.Equal(t, "filter", rule.Table.Name)
-				assert.Equal(t, "input", rule.Chain.Name)
-
-				exprs := rule.Exprs
-				lastExpr := exprs[len(exprs)-1]
-				verdictExpr, ok := lastExpr.(*expr.Verdict)
-				assert.True(t, ok)
-				assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
-
-				// Should have interface check
-				metaExpr, ok := exprs[0].(*expr.Meta)
-				assert.True(t, ok)
-				assert.Equal(t, expr.MetaKeyIIFNAME, metaExpr.Key)
-			},
-		},
-		"without_interface": {
-			intf:                 "",
-			protocol:             17,
-			destinationPortBytes: []byte{0x00, 0x35},
-			validateRule: func(t *testing.T, rule *nftables.Rule) {
-				t.Helper()
-				assert.Equal(t, "filter", rule.Table.Name)
-				assert.Equal(t, "input", rule.Chain.Name)
-
-				exprs := rule.Exprs
-				// First expr should be protocol payload, no interface
-				payloadExpr, ok := exprs[0].(*expr.Payload)
-				assert.True(t, ok)
-				assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-			},
-		},
-	}
-
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			table := &nftables.Table{Name: "filter"}
-			inputChain := &nftables.Chain{Name: "input", Table: table}
-
-			rule := buildRedirectInputRule(table, inputChain,
-				testCase.intf, testCase.protocol, testCase.destinationPortBytes)
-
-			testCase.validateRule(t, rule)
-		})
-	}
-}
-
-func Test_buildRedirectMatchExprs(t *testing.T) {
-	t.Parallel()
-
-	testCases := map[string]struct {
-		intf          string
-		protocol      uint8
-		portBytes     []byte
-		validateExprs func(t *testing.T, exprs []expr.Any)
-	}{
-		"with_interface": {
-			intf:      "eth0",
-			protocol:  6,
-			portBytes: []byte{0x00, 0x50},
-			validateExprs: func(t *testing.T, exprs []expr.Any) {
-				t.Helper()
-				assert.Len(t, exprs, 6)
-
-				// Interface check
-				metaExpr, ok := exprs[0].(*expr.Meta)
-				assert.True(t, ok)
-				assert.Equal(t, expr.MetaKeyIIFNAME, metaExpr.Key)
-
-				// Protocol check
-				protoCmp, ok := exprs[3].(*expr.Cmp)
-				assert.True(t, ok)
-				assert.Equal(t, []byte{6}, protoCmp.Data)
-
-				// Port check
-				portCmp, ok := exprs[5].(*expr.Cmp)
-				assert.True(t, ok)
-				assert.Equal(t, []byte{0x00, 0x50}, portCmp.Data)
-			},
-		},
-		"without_interface": {
-			intf:      "",
-			protocol:  17,
-			portBytes: []byte{0x00, 0x35},
-			validateExprs: func(t *testing.T, exprs []expr.Any) {
-				t.Helper()
-				assert.Len(t, exprs, 4)
-
-				// First is protocol payload
-				payloadExpr, ok := exprs[0].(*expr.Payload)
-				assert.True(t, ok)
-				assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-				assert.Equal(t, uint32(9), payloadExpr.Offset)
-
-				// Port check
-				portCmp, ok := exprs[3].(*expr.Cmp)
-				assert.True(t, ok)
-				assert.Equal(t, []byte{0x00, 0x35}, portCmp.Data)
-			},
-		},
-		"star_interface_same_as_empty": {
-			intf:      "*",
-			protocol:  6,
-			portBytes: []byte{0x00, 0x50},
-			validateExprs: func(t *testing.T, exprs []expr.Any) {
-				t.Helper()
-				assert.Len(t, exprs, 4)
-				// No interface check
-				payloadExpr, ok := exprs[0].(*expr.Payload)
-				assert.True(t, ok)
-				assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-			},
-		},
-	}
-
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			exprs := buildRedirectMatchExprs(testCase.intf, testCase.protocol, testCase.portBytes)
-			testCase.validateExprs(t, exprs)
-		})
-	}
-}
-
-func Test_isTableDoesNotExist(t *testing.T) {
-	t.Parallel()
-
-	testCases := map[string]struct {
-		err      error
-		expected bool
-	}{
-		"nil_error": {
-			err:      nil,
-			expected: false,
-		},
-		"table_does_not_exist": {
-			err:      assert.AnError,
-			expected: false,
-		},
-	}
-
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			if name == "table_does_not_exist" {
-				// Use a real error with expected message
-				result := isTableDoesNotExist(nil)
-				assert.False(t, result)
-
-				// Test with actual message
-				result = isTableDoesNotExist(assert.AnError)
-				assert.False(t, result)
-			} else {
-				result := isTableDoesNotExist(testCase.err)
-				assert.Equal(t, testCase.expected, result)
+				// Verify the 4 added rules (order: preroute, input per protocol).
+				assert.Equal(t, expectedPrerouteExprs(intf, protocolTCP, sourcePort, destinationPort),
+					addedRules[0].Exprs)
+				assert.Equal(t, preroutingChainName, addedRules[0].Chain.Name)
+				assert.Equal(t, expectedRedirectInputExprs(intf, protocolTCP, destinationPort),
+					addedRules[1].Exprs)
+				assert.Equal(t, inputChainName, addedRules[1].Chain.Name)
+				assert.Equal(t, expectedPrerouteExprs(intf, protocolUDP, sourcePort, destinationPort),
+					addedRules[2].Exprs)
+				assert.Equal(t, expectedRedirectInputExprs(intf, protocolUDP, destinationPort),
+					addedRules[3].Exprs)
+				return
 			}
-		})
-	}
-}
 
-func Test_removeFailedRules(t *testing.T) {
-	t.Parallel()
+			// Remove path: filter and nat tables/chains exist, delete 4 rules.
+			f.rules = buildTrackedRules()
+			mockConn.EXPECT().ListTables().Return(testFilterAndNatTables(), nil).Times(2)
+			mockConn.EXPECT().ListChains().Return(testFilterAndNatChains(), nil).Times(2)
 
-	testCases := map[string]struct {
-		rules       []*nftables.Rule
-		failed      []*nftables.Rule
-		expectedLen int
-	}{
-		"no_failed_rules": {
-			rules: []*nftables.Rule{
-				{Table: &nftables.Table{Name: "a"}},
-				{Table: &nftables.Table{Name: "b"}},
-			},
-			failed:      nil,
-			expectedLen: 2,
-		},
-	}
+			mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(table *nftables.Table, chain *nftables.Chain) ([]*nftables.Rule, error) {
+					var kernelRules []*nftables.Rule
+					handle := uint64(1)
+					for _, tracked := range f.rules {
+						if tracked.Chain.Name == chain.Name {
+							kernelRules = append(kernelRules, &nftables.Rule{
+								Table: table, Chain: chain, Handle: handle, Exprs: tracked.Exprs,
+							})
+							handle++
+						}
+					}
+					return kernelRules, nil
+				},
+			).Times(4)
+			mockConn.EXPECT().DelRule(gomock.Any()).Return(nil).Times(4)
+			mockConn.EXPECT().Flush().Return(nil)
 
-	// Fix pointer references - slices.Contains uses pointer equality
-	// all_failed: use same pointers in rules and failed
-	rAllFailedA := &nftables.Rule{Table: &nftables.Table{Name: "a"}}
-	rAllFailedB := &nftables.Rule{Table: &nftables.Table{Name: "b"}}
-	testCases["all_failed"] = struct {
-		rules       []*nftables.Rule
-		failed      []*nftables.Rule
-		expectedLen int
-	}{
-		rules:       []*nftables.Rule{rAllFailedA, rAllFailedB},
-		failed:      []*nftables.Rule{rAllFailedA, rAllFailedB},
-		expectedLen: 0,
-	}
+			err := f.RedirectPort(t.Context(), intf, sourcePort, destinationPort, true)
 
-	// some_failed: use same pointer for the failed rule
-	rSomeFailedA := &nftables.Rule{Table: &nftables.Table{Name: "a"}}
-	rSomeFailedB := &nftables.Rule{Table: &nftables.Table{Name: "b"}}
-	rSomeFailedC := &nftables.Rule{Table: &nftables.Table{Name: "c"}}
-	testCases["some_failed"] = struct {
-		rules       []*nftables.Rule
-		failed      []*nftables.Rule
-		expectedLen int
-	}{
-		rules:       []*nftables.Rule{rSomeFailedA, rSomeFailedB, rSomeFailedC},
-		failed:      []*nftables.Rule{rSomeFailedB},
-		expectedLen: 2,
-	}
-
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			result := removeFailedRules(testCase.rules, testCase.failed)
-			assert.Len(t, result, testCase.expectedLen)
+			assert.NoError(t, err)
+			assert.Empty(t, f.rules)
 		})
 	}
 }

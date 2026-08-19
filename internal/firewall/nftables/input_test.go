@@ -14,75 +14,24 @@ func Test_AcceptInputThroughInterface(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		interfaceName string
-		setupMockConn func() (dialFunc, *MockConn)
-		errorContains string
-		validateExprs func(t *testing.T, rule *nftables.Rule)
+		intf     string
+		expected []expr.Any
 	}{
-		"dial_error": {
-			interfaceName: "eth0",
-			setupMockConn: func() (dialFunc, *MockConn) {
-				return func() (conn, error) { return nil, assert.AnError }, nil
+		"named_interface": {
+			intf: "eth0",
+			expected: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte("eth0\x00")},
+				&expr.Verdict{Kind: expr.VerdictAccept},
 			},
-			errorContains: "creating nftables connection",
 		},
-		"flush_error": {
-			interfaceName: "eth0",
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any())
-				mockConn.EXPECT().Flush().Return(assert.AnError)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-			errorContains: "flushing",
+		"empty_interface": {
+			intf:     "",
+			expected: []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}},
 		},
-		"success_with_interface": {
-			interfaceName: "tun0",
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-					assert.Len(t, exprs, 3)
-
-					// Meta key IIFNAME
-					metaExpr, ok := exprs[0].(*expr.Meta)
-					assert.True(t, ok)
-					assert.Equal(t, expr.MetaKeyIIFNAME, metaExpr.Key)
-
-					// Cmp for interface name
-					cmpExpr, ok := exprs[1].(*expr.Cmp)
-					assert.True(t, ok)
-					assert.Equal(t, expr.CmpOpEq, cmpExpr.Op)
-					assert.Equal(t, []byte("tun0\x00"), cmpExpr.Data)
-
-					// Verdict Accept
-					verdictExpr, ok := exprs[2].(*expr.Verdict)
-					assert.True(t, ok)
-					assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
-
-					return rule
-				})
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
+		"all_interface": {
+			intf:     "*",
+			expected: []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}},
 		},
 	}
 
@@ -90,21 +39,32 @@ func Test_AcceptInputThroughInterface(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			dialFunc, _ := testCase.setupMockConn()
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
-			firewall := &Firewall{dialFunc: dialFunc}
+			mockConn.EXPECT().ListTables().Return(nil, nil)
+			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+				return table
+			})
+			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+				return chain
+			}).Times(3)
 
-			ctx := t.Context()
-			err := firewall.AcceptInputThroughInterface(ctx, testCase.interfaceName)
+			var addedRule *nftables.Rule
+			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+				addedRule = rule
+				return rule
+			})
+			mockConn.EXPECT().Flush().Return(nil)
 
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			err := f.AcceptInputThroughInterface(t.Context(), testCase.intf)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, addedRule)
+			assert.Equal(t, inputChainName, addedRule.Chain.Name)
+			assert.Equal(t, testCase.expected, addedRule.Exprs)
+			assert.Len(t, f.rules, 1)
 		})
 	}
 }
@@ -112,94 +72,27 @@ func Test_AcceptInputThroughInterface(t *testing.T) {
 func Test_AcceptInputToPort(t *testing.T) {
 	t.Parallel()
 
+	port := uint16(443)
+
+	buildRuleExprs := func(protocol uint8) []expr.Any {
+		exprs := append(protocolExprs(protocol), destinationPortExprs(port)...)
+		return append(exprs, &expr.Verdict{Kind: expr.VerdictAccept})
+	}
+
 	testCases := map[string]struct {
-		intf          string
-		port          uint16
-		remove        bool
-		setupFirewall func() *Firewall
-		setupMockConn func() (dialFunc, *MockConn)
-
-		errorContains     string
-		expectedRuleCount int
+		intf    string
+		remove  bool
+		tracked []*nftables.Rule
 	}{
-		"dial_error": {
-			intf: "eth0",
-			port: 80,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				return func() (conn, error) { return nil, assert.AnError }, nil
+		"add_no_interface":   {intf: ""},
+		"add_with_interface": {intf: "tun0"},
+		"remove": {
+			intf:   "tun0",
+			remove: true,
+			tracked: []*nftables.Rule{
+				{Exprs: withInterface(buildRuleExprs(protocolTCP), "tun0")},
+				{Exprs: withInterface(buildRuleExprs(protocolUDP), "tun0")},
 			},
-			errorContains: "creating nftables connection",
-		},
-		"flush_error_add_mode": {
-			intf: "",
-			port: 443,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any()).Times(2)
-				mockConn.EXPECT().Flush().Return(assert.AnError)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-			errorContains: "flushing",
-		},
-		"success_add_rules_without_interface": {
-			intf: "",
-			port: 1234,
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-				portBytes := []byte{0x04, 0xd2}
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-					assert.Len(t, exprs, 5)
-
-					// Protocol check (TCP or UDP)
-					payloadExpr, ok := exprs[0].(*expr.Payload)
-					assert.True(t, ok)
-					assert.Equal(t, expr.PayloadBaseNetworkHeader, payloadExpr.Base)
-					assert.Equal(t, uint32(9), payloadExpr.Offset)
-
-					cmpExpr, ok := exprs[1].(*expr.Cmp)
-					assert.True(t, ok)
-					assert.Contains(t, []byte{6, 17}, cmpExpr.Data[0])
-
-					// Port check
-					portPayload, ok := exprs[2].(*expr.Payload)
-					assert.True(t, ok)
-					assert.Equal(t, expr.PayloadBaseTransportHeader, portPayload.Base)
-					assert.Equal(t, uint32(2), portPayload.Offset)
-
-					portCmp, ok := exprs[3].(*expr.Cmp)
-					assert.True(t, ok)
-					assert.Equal(t, portBytes, portCmp.Data)
-
-					verdictExpr, ok := exprs[4].(*expr.Verdict)
-					assert.True(t, ok)
-					assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
-
-					return rule
-				}).Times(2)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-
-			expectedRuleCount: 2,
 		},
 	}
 
@@ -207,31 +100,59 @@ func Test_AcceptInputToPort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			var firewall *Firewall
-			if testCase.setupFirewall != nil {
-				firewall = testCase.setupFirewall()
-			}
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }, rules: testCase.tracked}
 
-			dialFunc, _ := testCase.setupMockConn()
-			if firewall == nil {
-				firewall = &Firewall{dialFunc: dialFunc}
+			mockConn.EXPECT().ListTables().Return(nil, nil)
+			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+				return table
+			})
+			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+				return chain
+			}).Times(3)
+
+			var addedRules []*nftables.Rule
+			if !testCase.remove {
+				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+					addedRules = append(addedRules, rule)
+					return rule
+				}).Times(2)
 			} else {
-				firewall.dialFunc = dialFunc
+				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(table *nftables.Table, chain *nftables.Chain) ([]*nftables.Rule, error) {
+						// Return the kernel rules matching the tracked rules.
+						var kernelRules []*nftables.Rule
+						handle := uint64(1)
+						for _, tracked := range testCase.tracked {
+							kernelRules = append(kernelRules, &nftables.Rule{
+								Table: table, Chain: chain, Handle: handle, Exprs: tracked.Exprs,
+							})
+							handle++
+						}
+						return kernelRules, nil
+					},
+				).Times(2)
+				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil).Times(2)
 			}
+			mockConn.EXPECT().Flush().Return(nil)
 
-			ctx := t.Context()
-			err := firewall.AcceptInputToPort(ctx, testCase.intf, testCase.port, testCase.remove)
+			err := f.AcceptInputToPort(t.Context(), testCase.intf, port, testCase.remove)
 
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
+			assert.NoError(t, err)
+
+			if !testCase.remove {
+				assert.Len(t, addedRules, 2)
+				expectedTCP := withInterface(buildRuleExprs(protocolTCP), testCase.intf)
+				expectedUDP := withInterface(buildRuleExprs(protocolUDP), testCase.intf)
+				assert.Equal(t, expectedTCP, addedRules[0].Exprs)
+				assert.Equal(t, expectedUDP, addedRules[1].Exprs)
+				for _, rule := range addedRules {
+					assert.Equal(t, inputChainName, rule.Chain.Name)
 				}
+				assert.Len(t, f.rules, 2)
 			} else {
-				assert.NoError(t, err)
-			}
-			if testCase.expectedRuleCount > 0 {
-				assert.Len(t, firewall.rules, testCase.expectedRuleCount)
+				assert.Empty(t, f.rules)
 			}
 		})
 	}
@@ -241,113 +162,16 @@ func Test_AcceptInputToSubnet(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		intf          string
-		subnet        netip.Prefix
-		setupMockConn func() (dialFunc, *MockConn)
-		errorContains string
+		intf   string
+		subnet netip.Prefix
 	}{
-		"dial_error": {
-			intf:   "eth0",
-			subnet: netip.MustParsePrefix("192.168.1.0/24"),
-			setupMockConn: func() (dialFunc, *MockConn) {
-				return func() (conn, error) { return nil, assert.AnError }, nil
-			},
-			errorContains: "creating nftables connection",
-		},
-		"flush_error": {
-			intf:   "eth0",
-			subnet: netip.MustParsePrefix("192.168.1.0/24"),
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any())
-				mockConn.EXPECT().Flush().Return(assert.AnError)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
-			errorContains: "flushing",
-		},
-		"success_ipv4_with_interface": {
-			intf:   "eth0",
+		"ipv4_with_interface": {
+			intf:   "tun0",
 			subnet: netip.MustParsePrefix("10.0.0.0/8"),
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-					assert.Len(t, exprs, 5)
-
-					// Interface check
-					metaExpr, ok := exprs[0].(*expr.Meta)
-					assert.True(t, ok)
-					assert.Equal(t, expr.MetaKeyIIFNAME, metaExpr.Key)
-
-					// IPv4 destination payload offset
-					payloadExpr, ok := exprs[2].(*expr.Payload)
-					assert.True(t, ok)
-					assert.Equal(t, uint32(16), payloadExpr.Offset)
-					assert.Equal(t, uint32(4), payloadExpr.Len)
-
-					// Cmp for IP address
-					cmpExpr, ok := exprs[3].(*expr.Cmp)
-					assert.True(t, ok)
-					assert.Equal(t, []byte{10, 0, 0, 0}, cmpExpr.Data)
-
-					// Verdict
-					verdictExpr, ok := exprs[4].(*expr.Verdict)
-					assert.True(t, ok)
-					assert.Equal(t, expr.VerdictAccept, verdictExpr.Kind)
-
-					return rule
-				})
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
 		},
-		"success_ipv6_with_interface": {
-			intf:   "eth0",
-			subnet: netip.MustParsePrefix("2001:db8::/32"),
-			setupMockConn: func() (dialFunc, *MockConn) {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(3)
-				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
-					exprs := rule.Exprs
-					assert.Len(t, exprs, 5)
-
-					// IPv6 destination payload offset
-					payloadExpr, ok := exprs[2].(*expr.Payload)
-					assert.True(t, ok)
-					assert.Equal(t, uint32(24), payloadExpr.Offset)
-					assert.Equal(t, uint32(16), payloadExpr.Len)
-
-					return rule
-				})
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }, mockConn
-			},
+		"ipv6_no_interface": {
+			intf:   "",
+			subnet: netip.MustParsePrefix("fd00::/8"),
 		},
 	}
 
@@ -355,21 +179,41 @@ func Test_AcceptInputToSubnet(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			dialFunc, _ := testCase.setupMockConn()
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
-			firewall := &Firewall{dialFunc: dialFunc}
+			mockConn.EXPECT().ListTables().Return(nil, nil)
+			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+				return table
+			})
+			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+				return chain
+			}).Times(3)
 
-			ctx := t.Context()
-			err := firewall.AcceptInputToSubnet(ctx, testCase.intf, testCase.subnet)
+			var addedRule *nftables.Rule
+			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
+				addedRule = rule
+				return rule
+			})
+			mockConn.EXPECT().Flush().Return(nil)
 
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			err := f.AcceptInputToSubnet(t.Context(), testCase.intf, testCase.subnet)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, addedRule)
+			assert.Equal(t, inputChainName, addedRule.Chain.Name)
+
+			expected := append(inputInterfaceExprs(testCase.intf), destinationSubnetExprs(testCase.subnet)...)
+			expected = append(expected, &expr.Verdict{Kind: expr.VerdictAccept})
+			assert.Equal(t, expected, addedRule.Exprs)
+			assert.Len(t, f.rules, 1)
 		})
 	}
+}
+
+// withInterface prepends the given interface's input expressions to exprs, if
+// the interface is not empty or "*".
+func withInterface(exprs []expr.Any, intf string) []expr.Any {
+	return append(inputInterfaceExprs(intf), exprs...)
 }

@@ -5,114 +5,37 @@ import (
 
 	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
 
-func Test_SetBaseChainsPolicy(t *testing.T) {
+func Test_parseChainPolicy(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
 		policy        string
-		setupMockConn func(dialErr error, flushErr error) dialFunc
-		errorContains string
+		expected      *nftables.ChainPolicy
+		expectedError string
 	}{
-		"invalid_policy": {
-			policy: "invalid",
-			setupMockConn: func(_, _ error) dialFunc {
-				return nil
-			},
-			errorContains: "unknown policy",
+		"accept": {
+			policy:   "accept",
+			expected: testPolicyAccept(),
 		},
-		"dial_error": {
-			policy: "accept",
-			setupMockConn: func(dialErr error, _ error) dialFunc {
-				return func() (conn, error) { return nil, dialErr }
-			},
-			errorContains: "creating nftables connection",
+		"accept_upper": {
+			policy:   "ACCEPT",
+			expected: testPolicyAccept(),
 		},
-		"flush_error": {
-			policy: "drop",
-			setupMockConn: func(_ error, flushErr error) dialFunc {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				// setupFilterWithBaseChains adds 3 chains, then SetBaseChainsPolicy updates each with policy
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(6)
-				mockConn.EXPECT().Flush().Return(flushErr)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
-			errorContains: "flushing nftables changes",
+		"drop": {
+			policy:   "drop",
+			expected: testPolicyDrop(),
 		},
-		"accept_policy_success": {
-			policy: "accept",
-			setupMockConn: func(_, _ error) dialFunc {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				addChainCount := 0
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					addChainCount++
-					// Policy is set on the 2nd round (calls 4-6), not the 1st round (calls 1-3)
-					if addChainCount > 3 {
-						assert.NotNil(t, chain.Policy)
-						assert.Equal(t, nftables.ChainPolicyAccept, *chain.Policy)
-					}
-					return chain
-				}).Times(6)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
+		"drop_mixed_case": {
+			policy:   "DrOp",
+			expected: testPolicyDrop(),
 		},
-		"drop_policy_success": {
-			policy: "drop",
-			setupMockConn: func(_, _ error) dialFunc {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				addChainCount := 0
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					addChainCount++
-					// Policy is set on the 2nd round (calls 4-6), not the 1st round (calls 1-3)
-					if addChainCount > 3 {
-						assert.NotNil(t, chain.Policy)
-						assert.Equal(t, nftables.ChainPolicyDrop, *chain.Policy)
-					}
-					return chain
-				}).Times(6)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
-		},
-		"case_insensitive_policy": {
-			policy: "ACCEPT",
-			setupMockConn: func(_, _ error) dialFunc {
-				ctrl := gomock.NewController(t)
-				mockConn := NewMockConn(ctrl)
-
-				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-					return table
-				})
-				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
-					return chain
-				}).Times(6)
-				mockConn.EXPECT().Flush().Return(nil)
-
-				return func() (conn, error) { return mockConn, nil }
-			},
+		"unknown": {
+			policy:        "foo",
+			expectedError: "unknown policy: foo",
 		},
 	}
 
@@ -120,24 +43,96 @@ func Test_SetBaseChainsPolicy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			var dialFunc dialFunc
-			if testCase.setupMockConn != nil {
-				dialFunc = testCase.setupMockConn(assert.AnError, assert.AnError)
+			chainPolicy, err := parseChainPolicy(testCase.policy)
+
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+				assert.Nil(t, chainPolicy)
+				return
 			}
 
-			firewall := &Firewall{dialFunc: dialFunc}
-
-			ctx := t.Context()
-			err := firewall.SetBaseChainsPolicy(ctx, testCase.policy)
-
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, err)
+			require.NotNil(t, chainPolicy)
+			assert.Equal(t, *testCase.expected, *chainPolicy)
 		})
 	}
+}
+
+func Test_SetBaseChainsPolicy(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		policy        string
+		tables        []*nftables.Table
+		chains        []*nftables.Chain
+		addTable      bool
+		addChain      int
+		expectedError string
+	}{
+		"accept_new": {
+			policy:   "accept",
+			addTable: true,
+			addChain: 3,
+		},
+		"drop_new": {
+			policy:   "drop",
+			addTable: true,
+			addChain: 3,
+		},
+		"accept_existing": {
+			policy:   "accept",
+			tables:   testFilterTables(),
+			chains:   testFilterChainsAll(),
+			addChain: 3,
+		},
+		"drop_existing": {
+			policy:   "drop",
+			tables:   testFilterTables(),
+			chains:   testFilterChainsAll(),
+			addChain: 3,
+		},
+		"unknown_policy": {
+			policy:        "foo",
+			expectedError: "unknown policy: foo",
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
+
+			if testCase.expectedError == "" {
+				mockConn.EXPECT().ListTables().Return(testCase.tables, nil)
+				if len(testCase.tables) > 0 {
+					mockConn.EXPECT().ListChains().Return(testCase.chains, nil)
+				}
+				if testCase.addTable {
+					mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+						return table
+					})
+				}
+				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
+					return chain
+				}).Times(testCase.addChain)
+				mockConn.EXPECT().Flush().Return(nil)
+			}
+
+			err := f.SetBaseChainsPolicy(t.Context(), testCase.policy)
+
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func testPolicyAccept() *nftables.ChainPolicy {
+	chainPolicy := nftables.ChainPolicyAccept
+	return &chainPolicy
 }

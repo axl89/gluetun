@@ -1,6 +1,7 @@
 package nftables
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,80 +11,64 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func Test_IsSupported(t *testing.T) {
-	t.Parallel()
-
-	// Test with real nftables if available
-	if _, exists := os.LookupEnv("NFT_AVAILABLE"); !exists {
-		t.Skip("NFT_AVAILABLE not set, skipping integration test")
-	}
-
-	result := IsSupported()
-	t.Logf("IsSupported: %v", result)
+// runResult is the (output, error) returned by a single nft command in
+// RunUserPostRules tests.
+type runResult struct {
+	output string
+	err    error
 }
 
-func Test_RunUserPostRules(t *testing.T) {
+func Test_parseUserRules(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		setupFile     func() string
-		filepath      string
-		errorContains string
-		warnfCalled   bool
+		content          string
+		expectedRules    []userRule
+		expectedWarnings int
 	}{
-		"file_does_not_exist": {
-			filepath: "/nonexistent/path/rules.conf",
-		},
-		"empty_file": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, nil, 0o600)
-				return filepath
+		"single_rule": {
+			content: "nft add table x",
+			expectedRules: []userRule{
+				{lineNum: 1, line: "nft add table x", args: []string{"add", "table", "x"}},
 			},
 		},
-		"comment_only_file": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, []byte("# this is a comment\n"), 0o600)
-				return filepath
+		"multiple_rules": {
+			content: "nft add table x\nnft flush ruleset",
+			expectedRules: []userRule{
+				{lineNum: 1, line: "nft add table x", args: []string{"add", "table", "x"}},
+				{lineNum: 2, line: "nft flush ruleset", args: []string{"flush", "ruleset"}},
 			},
 		},
-		"whitespace_only_lines": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, []byte("   \n\n  \n"), 0o600)
-				return filepath
+		"comment_skipped": {
+			content: "# comment\nnft add table x",
+			expectedRules: []userRule{
+				{lineNum: 2, line: "nft add table x", args: []string{"add", "table", "x"}},
 			},
 		},
-		"unrecognized_command_skipped": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, []byte("iptables -A INPUT -j ACCEPT\n"), 0o600)
-				return filepath
-			},
-			warnfCalled: true,
+		"non_nft_warned": {
+			content:          "echo hello\nnft add table x",
+			expectedRules:    []userRule{{lineNum: 2, line: "nft add table x", args: []string{"add", "table", "x"}}},
+			expectedWarnings: 1,
 		},
-		"not_nft_command_skipped": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, []byte("nftrace\n"), 0o600)
-				return filepath
-			},
-			warnfCalled: true,
+		"nftables_prefix_warned": {
+			content:          "nftables foo",
+			expectedRules:    nil,
+			expectedWarnings: 1,
 		},
-		"nft_with_no_args_skipped": {
-			setupFile: func() string {
-				tmpDir := t.TempDir()
-				filepath := filepath.Join(tmpDir, "rules.conf")
-				_ = os.WriteFile(filepath, []byte("nft\n"), 0o600)
-				return filepath
+		"tab_after_nft": {
+			content: "nft\tadd table x",
+			expectedRules: []userRule{
+				{lineNum: 1, line: "nft\tadd table x", args: []string{"add", "table", "x"}},
 			},
-			warnfCalled: false,
+		},
+		"nft_no_args": {
+			content: "nft",
+		},
+		"empty": {
+			content: "",
+		},
+		"whitespace_only": {
+			content: "   \n  ",
 		},
 	}
 
@@ -92,73 +77,54 @@ func Test_RunUserPostRules(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			logger := NewMockLogger(ctrl)
+			mockLogger := NewMockLogger(ctrl)
+			mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any()).Times(testCase.expectedWarnings)
 
-			if testCase.warnfCalled {
-				logger.EXPECT().Warnf(gomock.Any(), gomock.Any())
-			}
+			rules := parseUserRules([]byte(testCase.content), mockLogger)
 
-			var testFilepath string
-			if testCase.setupFile != nil {
-				testFilepath = testCase.setupFile()
-			} else {
-				testFilepath = testCase.filepath
-			}
-
-			firewall := &Firewall{logger: logger}
-
-			ctx := t.Context()
-			err := firewall.RunUserPostRules(ctx, testFilepath)
-
-			if testCase.errorContains != "" {
-				assert.Error(t, err)
-				if testCase.errorContains != "" {
-					assert.ErrorContains(t, err, testCase.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.Equal(t, testCase.expectedRules, rules)
 		})
 	}
 }
 
-func Test_RunUserPostRules_nft_command_execution(t *testing.T) {
-	t.Parallel()
-
-	// Skip if nft is not available
-	if _, err := exec.LookPath("nft"); err != nil {
-		t.Skip("nft not available")
+func writeUserRulesFile(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "post-rules.txt")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
-
-	ctrl := gomock.NewController(t)
-	logger := NewMockLogger(ctrl)
-
-	tmpDir := t.TempDir()
-	filepath := filepath.Join(tmpDir, "rules.conf")
-
-	// Create a file with a simple nft command
-	_ = os.WriteFile(filepath, []byte("nft list tables\n"), 0o600)
-
-	firewall := &Firewall{logger: logger}
-
-	ctx := t.Context()
-	err := firewall.RunUserPostRules(ctx, filepath)
-	assert.NoError(t, err)
+	return path
 }
 
-func Test_New(t *testing.T) {
+func Test_RunUserPostRules(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		logger   Logger
-		validate func(t *testing.T, fw *Firewall)
+		content       string
+		missing       bool
+		runResults    []runResult
+		expectedError string
+		expectSave    bool
+		expectRestore bool
 	}{
-		"with_nil_logger": {
-			logger: nil,
-			validate: func(t *testing.T, fw *Firewall) {
-				t.Helper()
-				assert.NotNil(t, fw.dialFunc)
-			},
+		"file_not_exist": {
+			missing: true,
+		},
+		"no_nft_lines": {
+			content: "# only a comment\n\n",
+		},
+		"success": {
+			content:    "nft add table x\nnft flush ruleset",
+			runResults: []runResult{{output: "ok"}, {output: "ok"}},
+			expectSave: true,
+		},
+		"failure_restores": {
+			content:       "nft add table x\nnft badcommand",
+			runResults:    []runResult{{output: "ok"}, {output: "err output", err: errors.New("nft failed")}},
+			expectedError: "running user rule on line 2",
+			expectSave:    true,
+			expectRestore: true,
 		},
 	}
 
@@ -166,11 +132,55 @@ func Test_New(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			firewall := New(testCase.logger, nil)
-			assert.NotNil(t, firewall)
+			ctrl := gomock.NewController(t)
+			mockConn := NewMockConn(ctrl)
+			mockRunner := NewMockCmdRunner(ctrl)
+			mockLogger := NewMockLogger(ctrl)
 
-			if testCase.validate != nil {
-				testCase.validate(t, firewall)
+			dialed := false
+			f := &Firewall{
+				dialFunc: func() (conn, error) { dialed = true; return mockConn, nil },
+				runner:   mockRunner,
+				logger:   mockLogger,
+			}
+
+			var path string
+			if !testCase.missing {
+				path = writeUserRulesFile(t, testCase.content)
+			} else {
+				path = filepath.Join(t.TempDir(), "does-not-exist.txt")
+			}
+
+			if testCase.expectSave {
+				// Save phase: no tables present.
+				mockConn.EXPECT().ListTables().Return(nil, nil)
+				mockConn.EXPECT().ListChains().Return(nil, nil)
+			}
+
+			for _, result := range testCase.runResults {
+				mockRunner.EXPECT().Run(gomock.Any()).DoAndReturn(
+					func(_ *exec.Cmd) (string, error) {
+						return result.output, result.err
+					},
+				)
+			}
+
+			if testCase.expectRestore {
+				// Restore phase: no saved tables, just a flush.
+				mockConn.EXPECT().Flush().Return(nil)
+			}
+
+			err := f.RunUserPostRules(t.Context(), path)
+
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
+			}
+			if testCase.expectSave {
+				assert.True(t, dialed)
+			} else {
+				assert.False(t, dialed)
 			}
 		})
 	}

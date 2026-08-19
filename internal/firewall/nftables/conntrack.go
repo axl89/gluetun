@@ -8,6 +8,8 @@ import (
 	"github.com/google/nftables/expr"
 )
 
+// AcceptEstablishedRelatedTraffic accepts incoming and outgoing traffic that
+// is part of an established or related connection.
 func (f *Firewall) AcceptEstablishedRelatedTraffic(_ context.Context) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -17,41 +19,27 @@ func (f *Firewall) AcceptEstablishedRelatedTraffic(_ context.Context) error {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, outputChain := setupFilterWithBaseChains(conn)
+	table, inputChain, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	if err != nil {
+		return fmt.Errorf("setting up filter table: %w", err)
+	}
 
+	const establishedRelatedMask = byte(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED)
 	ctStateExprs := []expr.Any{
-		&expr.Ct{
-			Key:      expr.CtKeySTATE,
-			Register: 1,
-		},
+		&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
 		&expr.Bitwise{
 			SourceRegister: 1,
 			DestRegister:   1,
 			Len:            4, //nolint:mnd
-			Mask:           []byte{byte(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), 0x00, 0x00, 0x00},
+			Mask:           []byte{establishedRelatedMask, 0x00, 0x00, 0x00},
 			Xor:            []byte{0x00, 0x00, 0x00, 0x00},
 		},
-		&expr.Cmp{
-			Op:       expr.CmpOpNeq,
-			Register: 1,
-			Data:     []byte{0x00, 0x00, 0x00, 0x00},
-		},
-		&expr.Verdict{
-			Kind: expr.VerdictAccept,
-		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0x00, 0x00, 0x00, 0x00}},
+		&expr.Verdict{Kind: expr.VerdictAccept},
 	}
 
-	conn.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: inputChain,
-		Exprs: ctStateExprs,
-	})
-
-	conn.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: outputChain,
-		Exprs: ctStateExprs,
-	})
+	conn.AddRule(&nftables.Rule{Table: table, Chain: inputChain, Exprs: ctStateExprs})
+	conn.AddRule(&nftables.Rule{Table: table, Chain: outputChain, Exprs: ctStateExprs})
 
 	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("flushing: %w", err)

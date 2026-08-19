@@ -8,14 +8,71 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
+func testFilterChains() (inputChain, forwardChain, outputChain *nftables.Chain) {
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	return &nftables.Chain{
+			Name: inputChainName, Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookInput, Priority: nftables.ChainPriorityFilter,
+		}, &nftables.Chain{
+			Name: forwardChainName, Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter,
+		}, &nftables.Chain{
+			Name: outputChainName, Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityFilter,
+		}
+}
+
 func Test_setupFilterWithBaseChains(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		expectedTableFamily nftables.TableFamily
+		tables   []*nftables.Table
+		chains   []*nftables.Chain
+		policy   *nftables.ChainPolicy
+		addTable bool
+		addChain int
 	}{
-		"default": {
-			expectedTableFamily: nftables.TableFamilyINet,
+		"table_and_chains_missing": {
+			tables:   nil,
+			chains:   nil,
+			policy:   nil,
+			addTable: true,
+			addChain: 3,
+		},
+		"table_missing_chains_present_but_table_missing": {
+			tables:   nil,
+			chains:   testFilterChainsAll(),
+			policy:   nil,
+			addTable: true,
+			addChain: 3,
+		},
+		"table_present_chains_missing": {
+			tables:   testFilterTables(),
+			chains:   nil,
+			policy:   nil,
+			addTable: false,
+			addChain: 3,
+		},
+		"table_and_chains_present_no_policy": {
+			tables:   testFilterTables(),
+			chains:   testFilterChainsAll(),
+			policy:   nil,
+			addTable: false,
+			addChain: 0,
+		},
+		"table_and_chains_present_with_policy": {
+			tables:   testFilterTables(),
+			chains:   testFilterChainsAll(),
+			policy:   testPolicyDrop(),
+			addTable: false,
+			addChain: 3,
+		},
+		"table_and_chains_missing_with_policy": {
+			tables:   nil,
+			chains:   nil,
+			policy:   testPolicyDrop(),
+			addTable: true,
+			addChain: 3,
 		},
 	}
 
@@ -26,35 +83,60 @@ func Test_setupFilterWithBaseChains(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockConn := NewMockConn(ctrl)
 
-			_ = testCase.expectedTableFamily
-
-			mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
-				return table
-			})
+			mockConn.EXPECT().ListTables().Return(testCase.tables, nil)
+			if len(testCase.tables) > 0 {
+				mockConn.EXPECT().ListChains().Return(testCase.chains, nil)
+			}
+			if testCase.addTable {
+				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
+					return table
+				}).Times(1)
+			}
 			mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
 				return chain
-			}).Times(3)
+			}).Times(testCase.addChain)
 
-			resultTable, resultInputChain, resultForwardChain, resultOutputChain := setupFilterWithBaseChains(mockConn)
+			resultTable, resultInputChain, resultForwardChain, resultOutputChain, err := setupFilterWithBaseChains(
+				mockConn, testCase.policy,
+			)
 
-			assert.NotNil(t, resultTable)
+			assert.NoError(t, err)
+
 			assert.Equal(t, "filter", resultTable.Name)
-			assert.Equal(t, testCase.expectedTableFamily, resultTable.Family)
+			assert.Equal(t, nftables.TableFamilyINet, resultTable.Family)
 
-			assert.NotNil(t, resultInputChain)
-			assert.Equal(t, "input", resultInputChain.Name)
-			assert.Equal(t, nftables.ChainTypeFilter, resultInputChain.Type)
-			assert.Equal(t, nftables.ChainHookInput, resultInputChain.Hooknum)
-
-			assert.NotNil(t, resultForwardChain)
-			assert.Equal(t, "forward", resultForwardChain.Name)
-			assert.Equal(t, nftables.ChainTypeFilter, resultForwardChain.Type)
-			assert.Equal(t, nftables.ChainHookForward, resultForwardChain.Hooknum)
-
-			assert.NotNil(t, resultOutputChain)
-			assert.Equal(t, "output", resultOutputChain.Name)
-			assert.Equal(t, nftables.ChainTypeFilter, resultOutputChain.Type)
-			assert.Equal(t, nftables.ChainHookOutput, resultOutputChain.Hooknum)
+			assertChain(t, resultInputChain, "input", nftables.ChainHookInput, testCase.policy)
+			assertChain(t, resultForwardChain, "forward", nftables.ChainHookForward, testCase.policy)
+			assertChain(t, resultOutputChain, "output", nftables.ChainHookOutput, testCase.policy)
 		})
 	}
+}
+
+func assertChain(t *testing.T, chain *nftables.Chain, name string,
+	hook *nftables.ChainHook, policy *nftables.ChainPolicy,
+) {
+	t.Helper()
+	assert.NotNil(t, chain)
+	assert.Equal(t, name, chain.Name)
+	assert.Equal(t, nftables.ChainTypeFilter, chain.Type)
+	assert.Equal(t, hook, chain.Hooknum)
+	if policy == nil {
+		assert.Nil(t, chain.Policy)
+	} else {
+		assert.Equal(t, policy, chain.Policy)
+	}
+}
+
+func testFilterTables() []*nftables.Table {
+	return []*nftables.Table{{Family: nftables.TableFamilyINet, Name: filterTableName}}
+}
+
+func testFilterChainsAll() []*nftables.Chain {
+	inputChain, forwardChain, outputChain := testFilterChains()
+	return []*nftables.Chain{inputChain, forwardChain, outputChain}
+}
+
+func testPolicyDrop() *nftables.ChainPolicy {
+	chainPolicy := nftables.ChainPolicyDrop
+	return &chainPolicy
 }
