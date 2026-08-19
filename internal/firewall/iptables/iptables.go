@@ -152,10 +152,8 @@ func (c *Config) AcceptEstablishedRelatedTraffic(ctx context.Context) error {
 
 // AcceptOutputPublicOnlyNewTraffic adds rules to mark new output connections, and to accept
 // established or related packets with this mark only. This effectively forces
-// previously established or related traffic to be blocked.
-// If remove is true, the rules are removed instead of appended.
-// If the relevant kernel modules are not available, it returns an error indicating
-// which kernel module is missing.
+// previously established or related traffic to be blocked, which is used as a fallback
+// to kill the existing connections when the conntrack tables cannot be flushed.
 func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context) error {
 	ipv4Instructions, ipv6Instructions := makeCreatePublicIPChainInstructions()
 	appendToBoth := func(instruction string) {

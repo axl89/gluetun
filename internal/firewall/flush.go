@@ -2,15 +2,27 @@ package firewall
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
-
-	"github.com/qdm12/gluetun/internal/firewall/iptables"
-	"github.com/qdm12/gluetun/internal/netlink"
 )
 
-func (c *Config) flushExistingConnections(ctx context.Context) error {
+// flushExistingConnections kills the existing connections that would
+// otherwise be accepted by the "established, related" traffic rules once
+// the firewall is enabled, letting them leak traffic outside of the VPN.
+//
+// It first tries flushing the conntrack tables via netlink, which is the
+// cleanest way to kill the connections. If this fails for any reason —
+// for example on older kernels that do not support the conntrack delete
+// message, see https://github.com/qdm12/gluetun/issues/3152 — it falls
+// back to iptables-based alternatives, in order of preference:
+//  1. marking the new connections, and filtering the unmarked ones,
+//  2. rejecting the public output traffic for one second,
+//  3. dropping the public output traffic for one second.
+//
+// This function never fails: killing the existing connections is an
+// optimization, not a requirement for the firewall to be functional, so
+// it only logs a warning if none of the methods succeeded.
+func (c *Config) flushExistingConnections(ctx context.Context) {
 	tries := []struct {
 		name string
 		f    func(ctx context.Context) error
@@ -23,21 +35,25 @@ func (c *Config) flushExistingConnections(ctx context.Context) error {
 		{name: "dropping connections for one second", f: c.dropOutputTrafficTemporarily},
 	}
 	errs := make([]error, 0, len(tries))
-	for i, try := range tries {
-		if i > 0 {
-			c.logger.Debugf("falling back to %s because %s failed: %s", try.name, tries[i-1].name, errs[i-1])
+	firstTry := true
+	var previousTryName string
+	var previousTryErr error
+	for _, try := range tries {
+		if !firstTry {
+			c.logger.Debugf("falling back to %s because %s failed: %s",
+				try.name, previousTryName, previousTryErr)
 		}
+		firstTry = false
 		err := try.f(ctx)
 		if err == nil {
-			return nil
+			return
 		}
 		err = fmt.Errorf("%s: %w", try.name, err)
-		if !errors.Is(err, iptables.ErrKernelModuleMissing) && !errors.Is(err, netlink.ErrConntrackNetlinkNotSupported) {
-			return err
-		}
 		errs = append(errs, err)
+		previousTryName = try.name
+		previousTryErr = err
 	}
-	return fmt.Errorf("all tries failed: %v", errs) //nolint:err113
+	c.logger.Warnf("flushing existing connections failed: %v", errs)
 }
 
 func (c *Config) rejectOutputTrafficTemporarily(ctx context.Context) error {

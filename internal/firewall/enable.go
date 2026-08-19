@@ -69,10 +69,10 @@ func (c *Config) enable(ctx context.Context) (err error) {
 		return err
 	}
 
-	err = c.flushExistingConnections(ctx)
-	if err != nil {
-		return fmt.Errorf("flushing existing connections: %w", err)
-	}
+	// Kill the existing connections that would otherwise be accepted by the
+	// "established, related" traffic rules and leak traffic outside of the VPN.
+	// This is an optimization, and its failure is not fatal.
+	c.flushExistingConnections(ctx)
 
 	if err = c.impl.AcceptEstablishedRelatedTraffic(ctx); err != nil {
 		return err
