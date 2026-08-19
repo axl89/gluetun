@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -10,7 +11,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func configureDevice(client *wgctrl.Client, settings Settings) (err error) {
+func ConfigureDevice(client *wgctrl.Client, settings Settings) (err error) {
 	deviceConfig, err := makeDeviceConfig(settings)
 	if err != nil {
 		return fmt.Errorf("making device configuration: %w", err)
@@ -27,19 +28,19 @@ func configureDevice(client *wgctrl.Client, settings Settings) (err error) {
 func makeDeviceConfig(settings Settings) (config wgtypes.Config, err error) {
 	privateKey, err := wgtypes.ParseKey(settings.PrivateKey)
 	if err != nil {
-		return config, ErrPrivateKeyInvalid
+		return config, errors.New("cannot parse private key")
 	}
 
 	publicKey, err := wgtypes.ParseKey(settings.PublicKey)
 	if err != nil {
-		return config, fmt.Errorf("%w: %s", ErrPublicKeyInvalid, settings.PublicKey)
+		return config, fmt.Errorf("cannot parse public key: %s", settings.PublicKey)
 	}
 
 	var preSharedKey *wgtypes.Key
 	if settings.PreSharedKey != "" {
 		preSharedKeyValue, err := wgtypes.ParseKey(settings.PreSharedKey)
 		if err != nil {
-			return config, ErrPreSharedKeyInvalid
+			return config, errors.New("cannot parse pre-shared key")
 		}
 		preSharedKey = &preSharedKeyValue
 	}

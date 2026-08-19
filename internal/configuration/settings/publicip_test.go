@@ -3,9 +3,9 @@ package settings
 import (
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/qdm12/gosettings/reader"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_PublicIP_read(t *testing.T) {
@@ -15,7 +15,6 @@ func Test_PublicIP_read(t *testing.T) {
 		makeReader func(ctrl *gomock.Controller) *reader.Reader
 		makeWarner func(ctrl *gomock.Controller) Warner
 		settings   PublicIP
-		errWrapped error
 		errMessage string
 	}{
 		"nothing_read": {
@@ -152,9 +151,10 @@ func Test_PublicIP_read(t *testing.T) {
 			err := settings.read(reader, warner)
 
 			assert.Equal(t, testCase.settings, settings)
-			assert.ErrorIs(t, err, testCase.errWrapped)
-			if testCase.errWrapped != nil {
+			if testCase.errMessage != "" {
 				assert.EqualError(t, err, testCase.errMessage)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

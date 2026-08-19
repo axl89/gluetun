@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/qdm12/gluetun/internal/configuration/settings"
 	"github.com/qdm12/gluetun/internal/constants"
 	"github.com/qdm12/gluetun/internal/constants/providers"
@@ -14,12 +13,11 @@ import (
 	"github.com/qdm12/gluetun/internal/models"
 	"github.com/qdm12/gluetun/internal/provider/common"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_GetConnection(t *testing.T) {
 	t.Parallel()
-
-	errTest := errors.New("test error")
 
 	testCases := map[string]struct {
 		provider        string
@@ -29,13 +27,12 @@ func Test_GetConnection(t *testing.T) {
 		defaults        ConnectionDefaults
 		ipv6Supported   bool
 		randSource      rand.Source
-		connection      models.Connection
-		errWrapped      error
+		connections     []models.Connection
 		errMessage      string
 	}{
 		"storage filter error": {
-			filterError: errTest,
-			errWrapped:  errTest,
+			filterError: errors.New("test error"),
+			connections: []models.Connection{{}},
 			errMessage:  "filtering servers: test error",
 		},
 		"server without IPs": {
@@ -50,8 +47,8 @@ func Test_GetConnection(t *testing.T) {
 				OpenVPNUDPPort: 1,
 				WireguardPort:  1,
 			},
-			errWrapped: ErrNoConnectionToPickFrom,
-			errMessage: "no connection to pick from",
+			connections: []models.Connection{{}},
+			errMessage:  "no connection to pick from",
 		},
 		"OpenVPN server with hostname": {
 			filteredServers: []models.Server{
@@ -66,13 +63,13 @@ func Test_GetConnection(t *testing.T) {
 				WithDefaults(providers.Mullvad),
 			defaults:   NewConnectionDefaults(443, 1194, 58820),
 			randSource: rand.NewSource(0),
-			connection: models.Connection{
+			connections: []models.Connection{{
 				Type:     vpn.OpenVPN,
 				IP:       netip.AddrFrom4([4]byte{1, 1, 1, 1}),
 				Protocol: constants.UDP,
 				Port:     1194,
 				Hostname: "name",
-			},
+			}},
 		},
 		"OpenVPN server with x509": {
 			filteredServers: []models.Server{
@@ -88,13 +85,13 @@ func Test_GetConnection(t *testing.T) {
 				WithDefaults(providers.Mullvad),
 			defaults:   NewConnectionDefaults(443, 1194, 58820),
 			randSource: rand.NewSource(0),
-			connection: models.Connection{
+			connections: []models.Connection{{
 				Type:     vpn.OpenVPN,
 				IP:       netip.AddrFrom4([4]byte{1, 1, 1, 1}),
 				Protocol: constants.UDP,
 				Port:     1194,
 				Hostname: "x509",
-			},
+			}},
 		},
 		"server with IPv4 and IPv6": {
 			filteredServers: []models.Server{
@@ -116,12 +113,12 @@ func Test_GetConnection(t *testing.T) {
 				WithDefaults(providers.Mullvad),
 			defaults:   NewConnectionDefaults(443, 1194, 58820),
 			randSource: rand.NewSource(0),
-			connection: models.Connection{
+			connections: []models.Connection{{
 				Type:     vpn.OpenVPN,
 				IP:       netip.AddrFrom4([4]byte{1, 1, 1, 1}),
 				Protocol: constants.UDP,
 				Port:     1194,
-			},
+			}},
 		},
 		"server with IPv4 and IPv6 and ipv6 supported": {
 			filteredServers: []models.Server{
@@ -129,8 +126,8 @@ func Test_GetConnection(t *testing.T) {
 					VPN: vpn.OpenVPN,
 					UDP: true,
 					IPs: []netip.Addr{
-						netip.IPv6Unspecified(),
 						netip.AddrFrom4([4]byte{1, 1, 1, 1}),
+						netip.IPv6Unspecified(),
 					},
 				},
 			},
@@ -139,12 +136,12 @@ func Test_GetConnection(t *testing.T) {
 			defaults:      NewConnectionDefaults(443, 1194, 58820),
 			ipv6Supported: true,
 			randSource:    rand.NewSource(0),
-			connection: models.Connection{
+			connections: []models.Connection{{
 				Type:     vpn.OpenVPN,
 				IP:       netip.IPv6Unspecified(),
 				Protocol: constants.UDP,
 				Port:     1194,
-			},
+			}},
 		},
 		"mixed servers": {
 			filteredServers: []models.Server{
@@ -152,12 +149,6 @@ func Test_GetConnection(t *testing.T) {
 					VPN:      vpn.OpenVPN,
 					UDP:      true,
 					IPs:      []netip.Addr{netip.AddrFrom4([4]byte{1, 1, 1, 1})},
-					OvpnX509: "ovpnx509",
-				},
-				{
-					VPN:      vpn.Wireguard,
-					UDP:      true,
-					IPs:      []netip.Addr{netip.AddrFrom4([4]byte{2, 2, 2, 2})},
 					OvpnX509: "ovpnx509",
 				},
 				{
@@ -174,13 +165,19 @@ func Test_GetConnection(t *testing.T) {
 				WithDefaults(providers.Mullvad),
 			defaults:   NewConnectionDefaults(443, 1194, 58820),
 			randSource: rand.NewSource(0),
-			connection: models.Connection{
+			connections: []models.Connection{{
 				Type:     vpn.OpenVPN,
 				IP:       netip.AddrFrom4([4]byte{1, 1, 1, 1}),
 				Protocol: constants.UDP,
 				Port:     1194,
 				Hostname: "ovpnx509",
-			},
+			}, {
+				Type:     vpn.OpenVPN,
+				IP:       netip.AddrFrom4([4]byte{3, 3, 3, 3}),
+				Protocol: constants.UDP,
+				Port:     1194,
+				Hostname: "hostname",
+			}},
 		},
 	}
 
@@ -188,6 +185,7 @@ func Test_GetConnection(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
+			connPicker := NewConnectionPicker()
 
 			storage := common.NewMockStorage(ctrl)
 			storage.EXPECT().
@@ -196,12 +194,13 @@ func Test_GetConnection(t *testing.T) {
 
 			connection, err := GetConnection(testCase.provider, storage,
 				testCase.serverSelection, testCase.defaults, testCase.ipv6Supported,
-				testCase.randSource)
+				connPicker)
 
-			assert.Equal(t, testCase.connection, connection)
-			assert.ErrorIs(t, err, testCase.errWrapped)
-			if testCase.errWrapped != nil {
+			assert.Contains(t, testCase.connections, connection)
+			if testCase.errMessage != "" {
 				assert.EqualError(t, err, testCase.errMessage)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

@@ -99,11 +99,9 @@ func ipPrefixesEqual(instruction, chainRule netip.Prefix) bool {
 		(!instruction.IsValid() && chainRule.Bits() == 0 && chainRule.Addr().IsUnspecified())
 }
 
-var ErrIptablesCommandMalformed = errors.New("iptables command is malformed")
-
 func parseIptablesInstruction(s string) (instruction iptablesInstruction, err error) {
 	if s == "" {
-		return iptablesInstruction{}, fmt.Errorf("%w: empty instruction", ErrIptablesCommandMalformed)
+		return iptablesInstruction{}, errors.New("iptables command is malformed: empty instruction")
 	}
 	fields := strings.Fields(s)
 
@@ -199,7 +197,7 @@ func parseInstructionFlag(fields []string, instruction *iptablesInstruction) (co
 	case "--reject-with":
 		instruction.rejectWith = value // for example "tcp-reset"
 	default:
-		return 0, fmt.Errorf("%w: unknown key %q", ErrIptablesCommandMalformed, flag)
+		return 0, fmt.Errorf("iptables command is malformed: unknown key %q", flag)
 	}
 	return consumed, nil
 }
@@ -211,15 +209,15 @@ func preCheckInstructionFields(fields []string) (consumed int, err error) {
 	case "--tcp-flags":
 		const expected = 3
 		if len(fields) < expected {
-			return 0, fmt.Errorf("%w: flag %q requires at least 2 values, but got %s",
-				ErrIptablesCommandMalformed, flag, strings.Join(fields, " "))
+			return 0, fmt.Errorf("iptables command is malformed: flag %q requires at least 2 values, but got %s",
+				flag, strings.Join(fields, " "))
 		}
 		return expected, nil
 	default:
 		const expected = 2
 		if len(fields) < expected {
-			return 0, fmt.Errorf("%w: flag %q requires a value, but got none",
-				ErrIptablesCommandMalformed, flag)
+			return 0, fmt.Errorf("iptables command is malformed: flag %q requires a value, but got none",
+				flag)
 		}
 		return expected, nil
 	}
@@ -303,8 +301,8 @@ func parseMatchModule(fields []string, instruction *iptablesInstruction) (
 			consumed++
 			instruction.mark.invert = true
 		default:
-			return consumed, fmt.Errorf("%w: unsupported match mark with value: %s",
-				ErrIptablesCommandMalformed, fields[2])
+			return consumed, fmt.Errorf("iptables command is malformed: unsupported match mark with value: %s",
+				fields[2])
 		}
 	case "connmark":
 		consumed++
@@ -320,8 +318,8 @@ func parseMatchModule(fields []string, instruction *iptablesInstruction) (
 				ErrIptablesCommandMalformed, fields[2])
 		}
 	default:
-		return 0, fmt.Errorf("%w: unknown match value: %s",
-			ErrIptablesCommandMalformed, fields[consumed])
+		return 0, fmt.Errorf("iptables command is malformed: unknown match value: %s",
+			fields[consumed])
 	}
 	return consumed, nil
 }

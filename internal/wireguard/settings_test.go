@@ -25,6 +25,7 @@ func Test_Settings_SetDefaults(t *testing.T) {
 				MTU:            device.DefaultMTU,
 				IPv6:           ptr(false),
 				Implementation: "auto",
+				GSO:            ptr(true),
 			},
 		},
 		"default endpoint port": {
@@ -39,6 +40,7 @@ func Test_Settings_SetDefaults(t *testing.T) {
 				MTU:            device.DefaultMTU,
 				IPv6:           ptr(false),
 				Implementation: "auto",
+				GSO:            ptr(true),
 			},
 		},
 		"not empty settings": {
@@ -50,6 +52,7 @@ func Test_Settings_SetDefaults(t *testing.T) {
 				MTU:            device.DefaultMTU,
 				IPv6:           ptr(true),
 				Implementation: "userspace",
+				GSO:            ptr(false),
 			},
 			expected: Settings{
 				InterfaceName:  "wg1",
@@ -59,6 +62,7 @@ func Test_Settings_SetDefaults(t *testing.T) {
 				MTU:            device.DefaultMTU,
 				IPv6:           ptr(true),
 				Implementation: "userspace",
+				GSO:            ptr(false),
 			},
 		},
 	}
@@ -84,25 +88,21 @@ func Test_Settings_Check(t *testing.T) {
 
 	testCases := map[string]struct {
 		settings   Settings
-		errWrapped error
 		errMessage string
 	}{
 		"empty settings": {
-			errWrapped: ErrInterfaceNameInvalid,
 			errMessage: "invalid interface name: ",
 		},
 		"bad interface name": {
 			settings: Settings{
 				InterfaceName: "$H1T",
 			},
-			errWrapped: ErrInterfaceNameInvalid,
 			errMessage: "invalid interface name: $H1T",
 		},
 		"empty private key": {
 			settings: Settings{
 				InterfaceName: "wg0",
 			},
-			errWrapped: ErrPrivateKeyMissing,
 			errMessage: "private key is missing",
 		},
 		"bad private key": {
@@ -110,7 +110,6 @@ func Test_Settings_Check(t *testing.T) {
 				InterfaceName: "wg0",
 				PrivateKey:    "bad key",
 			},
-			errWrapped: ErrPrivateKeyInvalid,
 			errMessage: "cannot parse private key",
 		},
 		"empty public key": {
@@ -118,7 +117,6 @@ func Test_Settings_Check(t *testing.T) {
 				InterfaceName: "wg0",
 				PrivateKey:    validKey1,
 			},
-			errWrapped: ErrPublicKeyMissing,
 			errMessage: "public key is missing",
 		},
 		"bad public key": {
@@ -127,7 +125,6 @@ func Test_Settings_Check(t *testing.T) {
 				PrivateKey:    validKey1,
 				PublicKey:     "bad key",
 			},
-			errWrapped: ErrPublicKeyInvalid,
 			errMessage: "cannot parse public key: bad key",
 		},
 		"bad preshared key": {
@@ -137,7 +134,6 @@ func Test_Settings_Check(t *testing.T) {
 				PublicKey:     validKey2,
 				PreSharedKey:  "bad key",
 			},
-			errWrapped: ErrPreSharedKeyInvalid,
 			errMessage: "cannot parse pre-shared key",
 		},
 		"invalid endpoint address": {
@@ -146,7 +142,6 @@ func Test_Settings_Check(t *testing.T) {
 				PrivateKey:    validKey1,
 				PublicKey:     validKey2,
 			},
-			errWrapped: ErrEndpointAddrMissing,
 			errMessage: "endpoint address is missing",
 		},
 		"zero endpoint port": {
@@ -156,7 +151,6 @@ func Test_Settings_Check(t *testing.T) {
 				PublicKey:     validKey2,
 				Endpoint:      netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 0),
 			},
-			errWrapped: ErrEndpointPortMissing,
 			errMessage: "endpoint port is missing",
 		},
 		"no address": {
@@ -166,7 +160,6 @@ func Test_Settings_Check(t *testing.T) {
 				PublicKey:     validKey2,
 				Endpoint:      netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 51820),
 			},
-			errWrapped: ErrAddressMissing,
 			errMessage: "interface address is missing",
 		},
 		"invalid address": {
@@ -177,7 +170,6 @@ func Test_Settings_Check(t *testing.T) {
 				Endpoint:      netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 51820),
 				Addresses:     []netip.Prefix{{}},
 			},
-			errWrapped: ErrAddressNotValid,
 			errMessage: "interface address is not valid: for address 1 of 1",
 		},
 
@@ -191,7 +183,6 @@ func Test_Settings_Check(t *testing.T) {
 					netip.PrefixFrom(netip.AddrFrom4([4]byte{5, 6, 7, 8}), 24),
 				},
 			},
-			errWrapped: ErrAllowedIPsMissing,
 			errMessage: "allowed IPs are missing",
 		},
 		"invalid allowed IP": {
@@ -205,7 +196,6 @@ func Test_Settings_Check(t *testing.T) {
 				},
 				AllowedIPs: []netip.Prefix{{}},
 			},
-			errWrapped: ErrAllowedIPNotValid,
 			errMessage: "allowed IP is not valid: for allowed IP 1 of 1",
 		},
 		"ipv6 allowed IP": {
@@ -222,7 +212,6 @@ func Test_Settings_Check(t *testing.T) {
 				},
 				IPv6: ptrTo(false),
 			},
-			errWrapped: ErrAllowedIPv6NotSupported,
 			errMessage: "allowed IPv6 address not supported: for allowed IP ::/0",
 		},
 		"zero firewall mark": {
@@ -236,7 +225,6 @@ func Test_Settings_Check(t *testing.T) {
 					netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 24),
 				},
 			},
-			errWrapped: ErrFirewallMarkMissing,
 			errMessage: "firewall mark is missing",
 		},
 		"missing_MTU": {
@@ -251,7 +239,6 @@ func Test_Settings_Check(t *testing.T) {
 				},
 				FirewallMark: 999,
 			},
-			errWrapped: ErrMTUMissing,
 			errMessage: "MTU is missing",
 		},
 		"invalid implementation": {
@@ -268,7 +255,6 @@ func Test_Settings_Check(t *testing.T) {
 				MTU:            1420,
 				Implementation: "x",
 			},
-			errWrapped: ErrImplementationInvalid,
 			errMessage: "invalid implementation: x",
 		},
 		"all valid": {
@@ -297,9 +283,10 @@ func Test_Settings_Check(t *testing.T) {
 
 			err := testCase.settings.Check()
 
-			assert.ErrorIs(t, err, testCase.errWrapped)
-			if testCase.errWrapped != nil {
+			if testCase.errMessage != "" {
 				assert.EqualError(t, err, testCase.errMessage)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

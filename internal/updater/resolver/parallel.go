@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 )
@@ -11,9 +10,9 @@ type Parallel struct {
 	repeatResolver *Repeat
 }
 
-func NewParallelResolver(resolverAddress string) *Parallel {
+func NewParallelResolver(dialer Dialer) *Parallel {
 	return &Parallel{
-		repeatResolver: NewRepeat(resolverAddress),
+		repeatResolver: NewRepeat(dialer),
 	}
 }
 
@@ -33,11 +32,6 @@ type parallelResult struct {
 	host string
 	IPs  []netip.Addr
 }
-
-var (
-	ErrMinFound     = errors.New("not enough hosts found")
-	ErrMaxFailRatio = errors.New("maximum failure ratio reached")
-)
 
 func (pr *Parallel) Resolve(ctx context.Context, settings ParallelSettings) (
 	hostToIPs map[string][]netip.Addr, warnings []string, err error,
@@ -90,7 +84,7 @@ func (pr *Parallel) Resolve(ctx context.Context, settings ParallelSettings) (
 	failureRatio := float64(len(warnings)) / float64(len(settings.Hosts))
 	if failureRatio > settings.MaxFailRatio {
 		return hostToIPs, warnings,
-			fmt.Errorf("%w: %.2f failure ratio reached", ErrMaxFailRatio, failureRatio)
+			fmt.Errorf("maximum failure ratio reached: %.2f failure ratio reached", failureRatio)
 	}
 
 	return hostToIPs, warnings, nil

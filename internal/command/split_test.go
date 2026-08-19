@@ -6,18 +6,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_Split(t *testing.T) {
+func Test_split(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
 		command    string
 		words      []string
-		errWrapped error
 		errMessage string
 	}{
 		"empty": {
 			command:    "",
-			errWrapped: ErrCommandEmpty,
 			errMessage: "command is empty",
 		},
 		"concrete_sh_command": {
@@ -74,22 +72,18 @@ func Test_Split(t *testing.T) {
 		},
 		"unterminated_single_quote": {
 			command:    "'abc'\\''def",
-			errWrapped: ErrSingleQuoteUnterminated,
 			errMessage: `splitting word in "'abc'\\''def": unterminated single-quoted string`,
 		},
 		"unterminated_double_quote": {
 			command:    "\"abc'def",
-			errWrapped: ErrDoubleQuoteUnterminated,
 			errMessage: `splitting word in "\"abc'def": unterminated double-quoted string`,
 		},
 		"unterminated_escape": {
 			command:    "abc\\",
-			errWrapped: ErrEscapeUnterminated,
 			errMessage: `splitting word in "abc\\": unterminated backslash-escape`,
 		},
 		"unterminated_escape_only": {
 			command:    "   \\",
-			errWrapped: ErrEscapeUnterminated,
 			errMessage: `unterminated backslash-escape: "   \\"`,
 		},
 	}
@@ -98,12 +92,13 @@ func Test_Split(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			words, err := Split(testCase.command)
+			words, err := split(testCase.command)
 
 			assert.Equal(t, testCase.words, words)
-			assert.ErrorIs(t, err, testCase.errWrapped)
-			if testCase.errWrapped != nil {
-				assert.EqualError(t, err, testCase.errMessage)
+			if testCase.errMessage != "" {
+				assert.ErrorContains(t, err, testCase.errMessage)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

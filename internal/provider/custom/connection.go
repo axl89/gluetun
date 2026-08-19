@@ -1,7 +1,6 @@
 package custom
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/qdm12/gluetun/internal/configuration/settings"
@@ -10,8 +9,6 @@ import (
 	"github.com/qdm12/gluetun/internal/models"
 )
 
-var ErrVPNTypeNotSupported = errors.New("VPN type not supported for custom provider")
-
 // GetConnection gets the connection from the OpenVPN configuration file.
 func (p *Provider) GetConnection(selection settings.ServerSelection, _ bool) (
 	connection models.Connection, err error,
@@ -19,10 +16,10 @@ func (p *Provider) GetConnection(selection settings.ServerSelection, _ bool) (
 	switch selection.VPN {
 	case vpn.OpenVPN:
 		return getOpenVPNConnection(p.extractor, selection)
-	case vpn.Wireguard:
+	case vpn.Wireguard, vpn.AmneziaWg:
 		return getWireguardConnection(selection), nil
 	default:
-		return connection, fmt.Errorf("%w: %s", ErrVPNTypeNotSupported, selection.VPN)
+		return connection, fmt.Errorf("VPN type not supported for custom provider: %s", selection.VPN)
 	}
 }
 

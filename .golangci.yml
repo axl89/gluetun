@@ -12,6 +12,10 @@ formatters:
       - builtin$
       - examples$
 
+run:
+  build-tags:
+    - integration
+
 linters:
   settings:
     misspell:
@@ -42,6 +46,7 @@ linters:
           - dupl
           - err113
           - maintidx
+          - prealloc
         path: _test\.go
       - linters:
           - dupl
@@ -61,9 +66,16 @@ linters:
           - lll
         source: "^// https://.+$"
       - linters:
+          - mnd
+        source: "^	cleanups\\.Add.+$"
+        path: internal\/(wireguard|amneziawg)\/run\.go
+      - linters:
           - err113
           - mnd
         path: ci\/.+\.go
+      - linters:
+          - err113
+        text: "do not define dynamic errors, use wrapped static errors instead"
 
     paths:
       - third_party$

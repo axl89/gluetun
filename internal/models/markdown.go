@@ -1,7 +1,6 @@
 package models
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -109,8 +108,6 @@ func (s *Servers) toMarkdown(vpnProvider string) (formatted string, err error) {
 	return formatted, nil
 }
 
-var ErrMarkdownHeadersNotDefined = errors.New("markdown headers not defined")
-
 func getMarkdownHeaders(vpnProvider string) (headers []string, err error) {
 	switch vpnProvider {
 	case providers.Airvpn:
@@ -136,8 +133,6 @@ func getMarkdownHeaders(vpnProvider string) (headers []string, err error) {
 		return []string{countryHeader, cityHeader, ispHeader, ownedHeader, hostnameHeader, vpnHeader}, nil
 	case providers.Nordvpn:
 		return []string{countryHeader, regionHeader, cityHeader, hostnameHeader, vpnHeader, categoriesHeader}, nil
-	case providers.Perfectprivacy:
-		return []string{cityHeader, tcpHeader, udpHeader}, nil
 	case providers.Privado:
 		return []string{countryHeader, regionHeader, cityHeader, hostnameHeader}, nil
 	case providers.PrivateInternetAccess:
@@ -169,6 +164,6 @@ func getMarkdownHeaders(vpnProvider string) (headers []string, err error) {
 	case providers.Windscribe:
 		return []string{regionHeader, cityHeader, hostnameHeader, vpnHeader}, nil
 	default:
-		return nil, fmt.Errorf("%w: for %s", ErrMarkdownHeadersNotDefined, vpnProvider)
+		return nil, fmt.Errorf("markdown headers not defined: for %s", vpnProvider)
 	}
 }

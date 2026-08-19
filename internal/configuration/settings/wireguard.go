@@ -1,13 +1,13 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/qdm12/gluetun/internal/configuration/settings/helpers"
 	"github.com/qdm12/gluetun/internal/constants/providers"
 	"github.com/qdm12/gosettings"
 	"github.com/qdm12/gosettings/reader"
@@ -46,31 +46,23 @@ type Wireguard struct {
 	// It defaults to "auto" and cannot be the empty string
 	// in the internal state.
 	Implementation string `json:"implementation"`
+	// GSO enables wireguard-go's GRO/GSO batched TUN I/O by creating
+	// the WireGuard TUN device with IFF_VNET_HDR. It should be disabled
+	// on kernels (e.g. certain NAS devices) that claim IFF_VNET_HDR
+	// support but return EINVAL when wireguard-go writes GRO-coalesced
+	// packets with virtio_net_hdr structs under load.
+	// It defaults to true and cannot be nil in the internal state.
+	GSO *bool `json:"gso"`
 }
 
 var regexpInterfaceName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
 // Validate validates Wireguard settings.
-// It should only be ran if the VPN type chosen is Wireguard.
-func (w Wireguard) validate(vpnProvider string, ipv6Supported bool) (err error) {
-	if !helpers.IsOneOf(vpnProvider,
-		providers.Airvpn,
-		providers.Custom,
-		providers.Fastestvpn,
-		providers.Ivpn,
-		providers.Mullvad,
-		providers.Nordvpn,
-		providers.Protonvpn,
-		providers.Surfshark,
-		providers.Windscribe,
-	) {
-		// do not validate for VPN provider not supporting Wireguard
-		return nil
-	}
-
+// It should only be ran if the VPN type chosen is Wireguard or AmneziaWg.
+func (w Wireguard) validate(vpnProvider string, ipv6Supported, amneziawg bool) (err error) {
 	// Validate PrivateKey
 	if *w.PrivateKey == "" {
-		return fmt.Errorf("%w", ErrWireguardPrivateKeyNotSet)
+		return errors.New("private key is not set")
 	}
 	_, err = wgtypes.ParseKey(*w.PrivateKey)
 	if err != nil {
@@ -84,7 +76,7 @@ func (w Wireguard) validate(vpnProvider string, ipv6Supported bool) (err error) 
 
 	if vpnProvider == providers.Airvpn {
 		if *w.PreSharedKey == "" {
-			return fmt.Errorf("%w", ErrWireguardPreSharedKeyNotSet)
+			return errors.New("pre-shared key is not set")
 		}
 	}
 
@@ -98,17 +90,15 @@ func (w Wireguard) validate(vpnProvider string, ipv6Supported bool) (err error) 
 
 	// Validate Addresses
 	if len(w.Addresses) == 0 {
-		return fmt.Errorf("%w", ErrWireguardInterfaceAddressNotSet)
+		return errors.New("interface address is not set")
 	}
 	for i, ipNet := range w.Addresses {
 		if !ipNet.IsValid() {
-			return fmt.Errorf("%w: for address at index %d",
-				ErrWireguardInterfaceAddressNotSet, i)
+			return fmt.Errorf("interface address is not set: for address at index %d", i)
 		}
 
 		if !ipv6Supported && ipNet.Addr().Is6() {
-			return fmt.Errorf("%w: address %s",
-				ErrWireguardInterfaceAddressIPv6, ipNet.String())
+			return fmt.Errorf("interface address is IPv6 but IPv6 is not supported: address %s", ipNet.String())
 		}
 	}
 
@@ -116,29 +106,28 @@ func (w Wireguard) validate(vpnProvider string, ipv6Supported bool) (err error) 
 	// WARNING: do not check for IPv6 networks in the allowed IPs,
 	// the wireguard code will take care to ignore it.
 	if len(w.AllowedIPs) == 0 {
-		return fmt.Errorf("%w", ErrWireguardAllowedIPsNotSet)
+		return errors.New("allowed IPs is not set")
 	}
 	for i, allowedIP := range w.AllowedIPs {
 		if !allowedIP.IsValid() {
-			return fmt.Errorf("%w: for allowed ip %d of %d",
-				ErrWireguardAllowedIPNotSet, i+1, len(w.AllowedIPs))
+			return fmt.Errorf("allowed IP is not set: for allowed ip %d of %d", i+1, len(w.AllowedIPs))
 		}
 	}
 
 	if *w.PersistentKeepaliveInterval < 0 {
-		return fmt.Errorf("%w: %s", ErrWireguardKeepAliveNegative,
-			*w.PersistentKeepaliveInterval)
+		return fmt.Errorf("persistent keep alive interval is negative: %s", *w.PersistentKeepaliveInterval)
 	}
 
 	// Validate interface
 	if !regexpInterfaceName.MatchString(w.Interface) {
-		return fmt.Errorf("%w: '%s' does not match regex '%s'",
-			ErrWireguardInterfaceNotValid, w.Interface, regexpInterfaceName)
+		return fmt.Errorf("interface name is not valid: '%s' does not match regex '%s'", w.Interface, regexpInterfaceName)
 	}
 
-	validImplementations := []string{"auto", "userspace", "kernelspace"}
-	if err := validate.IsOneOf(w.Implementation, validImplementations...); err != nil {
-		return fmt.Errorf("%w: %w", ErrWireguardImplementationNotValid, err)
+	if !amneziawg { // amneziawg should have its own Implementation field and ignore this one
+		validImplementations := []string{"auto", "userspace", "kernelspace"}
+		if err := validate.IsOneOf(w.Implementation, validImplementations...); err != nil {
+			return fmt.Errorf("implementation is not valid: %w", err)
+		}
 	}
 
 	return nil
@@ -154,6 +143,7 @@ func (w *Wireguard) copy() (copied Wireguard) {
 		Interface:                   w.Interface,
 		MTU:                         w.MTU,
 		Implementation:              w.Implementation,
+		GSO:                         gosettings.CopyPointer(w.GSO),
 	}
 }
 
@@ -167,6 +157,7 @@ func (w *Wireguard) overrideWith(other Wireguard) {
 	w.Interface = gosettings.OverrideWithComparable(w.Interface, other.Interface)
 	w.MTU = gosettings.OverrideWithComparable(w.MTU, other.MTU)
 	w.Implementation = gosettings.OverrideWithComparable(w.Implementation, other.Implementation)
+	w.GSO = gosettings.OverrideWithPointer(w.GSO, other.GSO)
 }
 
 func (w *Wireguard) setDefaults(vpnProvider string) {
@@ -191,6 +182,7 @@ func (w *Wireguard) setDefaults(vpnProvider string) {
 	w.Interface = gosettings.DefaultComparable(w.Interface, "wg0")
 	w.MTU = gosettings.DefaultPointer(w.MTU, 0)
 	w.Implementation = gosettings.DefaultComparable(w.Implementation, "auto")
+	w.GSO = gosettings.DefaultPointer(w.GSO, true)
 }
 
 func (w Wireguard) String() string {
@@ -235,24 +227,37 @@ func (w Wireguard) toLinesNode() (node *gotree.Node) {
 		node.Appendf("Implementation: %s", w.Implementation)
 	}
 
+	if !*w.GSO {
+		node.Append("GSO disabled")
+	}
+
 	return node
 }
 
-func (w *Wireguard) read(r *reader.Reader) (err error) {
-	w.PrivateKey = r.Get("WIREGUARD_PRIVATE_KEY", reader.ForceLowercase(false))
-	w.PreSharedKey = r.Get("WIREGUARD_PRESHARED_KEY", reader.ForceLowercase(false))
+func (w *Wireguard) read(r *reader.Reader, amneziaWG bool) (err error) {
+	prefix := "WIREGUARD"
+	if amneziaWG {
+		prefix = "AMNEZIAWG"
+	}
+	w.PrivateKey = r.Get(prefix+"_PRIVATE_KEY", reader.ForceLowercase(false))
+	w.PreSharedKey = r.Get(prefix+"_PRESHARED_KEY", reader.ForceLowercase(false))
 	w.Interface = r.String("VPN_INTERFACE",
-		reader.RetroKeys("WIREGUARD_INTERFACE"), reader.ForceLowercase(false))
-	w.Implementation = r.String("WIREGUARD_IMPLEMENTATION")
+		reader.RetroKeys(prefix+"_INTERFACE"), reader.ForceLowercase(false))
 
-	addressStrings := r.CSV("WIREGUARD_ADDRESSES", reader.RetroKeys("WIREGUARD_ADDRESS"))
+	if !amneziaWG {
+		w.Implementation = r.String("WIREGUARD_IMPLEMENTATION")
+	}
+
+	addressStrings := r.CSV(prefix+"_ADDRESSES", reader.RetroKeys(prefix+"_ADDRESS"))
 	// WARNING: do not initialize w.Addresses to an empty slice
 	// or the defaults for nordvpn will not work.
 	for _, addressString := range addressStrings {
-		if !strings.ContainsRune(addressString, '/') {
+		addressString = strings.TrimSpace(addressString)
+		if addressString == "" {
+			continue
+		} else if !strings.ContainsRune(addressString, '/') {
 			addressString += "/32"
 		}
-		addressString = strings.TrimSpace(addressString)
 		address, err := netip.ParsePrefix(addressString)
 		if err != nil {
 			return fmt.Errorf("parsing address: %w", err)
@@ -260,19 +265,25 @@ func (w *Wireguard) read(r *reader.Reader) (err error) {
 		w.Addresses = append(w.Addresses, address)
 	}
 
-	w.AllowedIPs, err = r.CSVNetipPrefixes("WIREGUARD_ALLOWED_IPS")
+	w.AllowedIPs, err = r.CSVNetipPrefixes(prefix + "_ALLOWED_IPS")
 	if err != nil {
 		return err // already wrapped
 	}
 
-	w.PersistentKeepaliveInterval, err = r.DurationPtr("WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL")
+	w.PersistentKeepaliveInterval, err = r.DurationPtr(prefix + "_PERSISTENT_KEEPALIVE_INTERVAL")
 	if err != nil {
 		return err
 	}
 
-	w.MTU, err = r.Uint32Ptr("WIREGUARD_MTU")
+	w.MTU, err = r.Uint32Ptr(prefix + "_MTU")
 	if err != nil {
 		return err
 	}
+
+	w.GSO, err = r.BoolPtr("WIREGUARD_GSO")
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

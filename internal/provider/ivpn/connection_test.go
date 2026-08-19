@@ -2,12 +2,10 @@ package ivpn
 
 import (
 	"errors"
-	"math/rand"
 	"net/http"
 	"net/netip"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/qdm12/gluetun/internal/configuration/settings"
 	"github.com/qdm12/gluetun/internal/constants"
 	"github.com/qdm12/gluetun/internal/constants/providers"
@@ -15,6 +13,7 @@ import (
 	"github.com/qdm12/gluetun/internal/models"
 	"github.com/qdm12/gluetun/internal/provider/common"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
 
 func Test_Provider_GetConnection(t *testing.T) {
@@ -22,20 +21,16 @@ func Test_Provider_GetConnection(t *testing.T) {
 
 	const provider = providers.Ivpn
 
-	errTest := errors.New("test error")
-
 	testCases := map[string]struct {
 		filteredServers []models.Server
 		storageErr      error
 		selection       settings.ServerSelection
 		ipv6Supported   bool
 		connection      models.Connection
-		errWrapped      error
 		errMessage      string
 	}{
 		"error": {
-			storageErr: errTest,
-			errWrapped: errTest,
+			storageErr: errors.New("test error"),
 			errMessage: "filtering servers: test error",
 		},
 		"default OpenVPN TCP port": {
@@ -95,18 +90,18 @@ func Test_Provider_GetConnection(t *testing.T) {
 			storage := common.NewMockStorage(ctrl)
 			storage.EXPECT().FilterServers(provider, testCase.selection).
 				Return(testCase.filteredServers, testCase.storageErr)
-			randSource := rand.NewSource(0)
 
 			client := (*http.Client)(nil)
 			warner := (common.Warner)(nil)
 			parallelResolver := (common.ParallelResolver)(nil)
-			provider := New(storage, randSource, client, warner, parallelResolver)
+			provider := New(storage, client, warner, parallelResolver)
 
 			connection, err := provider.GetConnection(testCase.selection, testCase.ipv6Supported)
 
-			assert.ErrorIs(t, err, testCase.errWrapped)
-			if testCase.errWrapped != nil {
+			if testCase.errMessage != "" {
 				assert.EqualError(t, err, testCase.errMessage)
+			} else {
+				assert.NoError(t, err)
 			}
 
 			assert.Equal(t, testCase.connection, connection)

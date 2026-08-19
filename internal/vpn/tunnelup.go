@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
-	"github.com/qdm12/dns/v2/pkg/check"
 	"github.com/qdm12/gluetun/internal/constants"
+	"github.com/qdm12/gluetun/internal/constants/vpn"
+	"github.com/qdm12/gluetun/internal/netlink"
 	"github.com/qdm12/gluetun/internal/pmtud"
 	pconstants "github.com/qdm12/gluetun/internal/pmtud/constants"
 	"github.com/qdm12/gluetun/internal/pmtud/tcp"
@@ -16,6 +19,7 @@ import (
 )
 
 type tunnelUpData struct {
+	upCommand string
 	// Healthcheck
 	serverIP netip.Addr
 	pmtud    tunnelUpPMTUDData
@@ -37,6 +41,8 @@ type tunnelUpPMTUDData struct {
 	// network is used to find the network level header overhead.
 	// It can be [constants.UDP] or [constants.TCP].
 	network string
+	// ipv6 is true if the VPN connection supports IPv6.
+	ipv6 bool
 	// icmpAddrs is the list of addresses to use for ICMP path MTU discovery.
 	// Each address should handle ICMP packets for PMTUD to work.
 	icmpAddrs []netip.Addr
@@ -46,6 +52,14 @@ type tunnelUpPMTUDData struct {
 }
 
 func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
+	switch vpnType := l.GetSettings().Type; vpnType {
+	case vpn.Wireguard, vpn.AmneziaWg:
+		l.logger.Infof("%s setup is complete. "+
+			"Note %s is a silent protocol and it may or may not work, without giving any error message. "+
+			"Typically i/o timeout errors indicate the %s connection is not working.",
+			vpnType, vpnType, vpnType)
+	}
+
 	l.client.CloseIdleConnections()
 
 	for _, vpnPort := range l.vpnInputPorts {
@@ -58,13 +72,16 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 	if data.pmtud.enabled {
 		mtuLogger := l.logger.New(log.SetComponent("MTU discovery"))
 		err := updateToMaxMTU(ctx, data.vpnIntf, data.pmtud.vpnType,
-			data.pmtud.network, data.pmtud.icmpAddrs, data.pmtud.tcpAddrs,
+			data.pmtud.network, data.pmtud.ipv6, data.pmtud.icmpAddrs, data.pmtud.tcpAddrs,
 			l.netLinker, l.routing, l.fw, mtuLogger)
 		if err != nil {
 			mtuLogger.Error(err.Error())
 		}
 	}
 
+	_, _ = l.dnsLooper.ApplyStatus(ctx, constants.Running)
+
+	<-l.healthDone // make sure the health checker is stopped before restarting it
 	icmpTargetIPs := l.healthSettings.ICMPTargetIPs
 	if len(icmpTargetIPs) == 1 && icmpTargetIPs[0].IsUnspecified() {
 		icmpTargetIPs = []netip.Addr{data.serverIP}
@@ -88,16 +105,12 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 	// Start collecting health errors asynchronously, since
 	// we should not wait for the code below to complete
 	// to start monitoring health and auto-healing.
-	go l.collectHealthErrors(ctx, loopCtx, healthErrCh)
-
-	if *l.dnsLooper.GetSettings().ServerEnabled {
-		_, _ = l.dnsLooper.ApplyStatus(ctx, constants.Running)
-	} else {
-		err := check.WaitForDNS(ctx, check.Settings{})
-		if err != nil {
-			l.logger.Error("waiting for DNS to be ready: " + err.Error())
-		}
-	}
+	// We keep track of when this goroutine is done with the healthDone
+	// channel to avoid a race condition where the health checker is stopped
+	// after being reconfigured and restarted, instead of before.
+	healthDone := make(chan struct{})
+	l.healthDone = healthDone
+	go l.collectHealthErrors(ctx, loopCtx, healthDone, healthErrCh)
 
 	err = l.publicip.RunOnce(ctx)
 	if err != nil {
@@ -114,13 +127,29 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 		}
 	}
 
+	if data.upCommand != "" {
+		commandString := strings.ReplaceAll(data.upCommand, "{{VPN_INTERFACE}}", data.vpnIntf)
+		err := l.cmder.RunAndLog(context.Background(), commandString, l.logger)
+		if err != nil {
+			l.logger.Error("failed to run VPN up command: " + err.Error())
+		}
+	}
+
 	err = l.startPortForwarding(data)
 	if err != nil {
 		l.logger.Error(err.Error())
 	}
+
+	_, err = l.boringPoll.Start()
+	if err != nil {
+		l.logger.Error("cannot start boring poll: " + err.Error())
+	}
 }
 
-func (l *Loop) collectHealthErrors(ctx, loopCtx context.Context, healthErrCh <-chan error) {
+func (l *Loop) collectHealthErrors(ctx, loopCtx context.Context,
+	done chan<- struct{}, healthErrCh <-chan error,
+) {
+	defer close(done)
 	var previousHealthErr error
 	for {
 		select {
@@ -156,14 +185,14 @@ func (l *Loop) restartVPN(ctx context.Context, healthErr error) {
 }
 
 func updateToMaxMTU(ctx context.Context, vpnInterface string,
-	vpnType, network string, icmpAddrs []netip.Addr, tcpAddrs []netip.AddrPort,
+	vpnType, network string, ipv6 bool, icmpAddrs []netip.Addr, tcpAddrs []netip.AddrPort,
 	netlinker NetLinker, routing Routing, firewall tcp.Firewall, logger *log.Logger,
 ) error {
 	logger.Info("finding maximum MTU, this can take up to 6 seconds")
 
-	vpnGatewayIP, err := routing.VPNLocalGatewayIP(vpnInterface)
+	vpnRoutes, err := routing.VPNRoutes(vpnInterface)
 	if err != nil {
-		return fmt.Errorf("getting VPN gateway IP address: %w", err)
+		return fmt.Errorf("getting VPN routes: %w", err)
 	}
 
 	link, err := netlinker.LinkByName(vpnInterface)
@@ -173,7 +202,7 @@ func updateToMaxMTU(ctx context.Context, vpnInterface string,
 
 	originalMTU := link.MTU
 
-	vpnLinkMTU := pmtud.MaxTheoreticalVPNMTU(vpnType, network, vpnGatewayIP)
+	vpnLinkMTU := pmtud.MaxTheoreticalVPNMTU(vpnType, network, ipv6)
 
 	// Setting the VPN link MTU to 1500 might interrupt the connection until
 	// the new MTU is set again, but this is necessary to find the highest valid MTU.
@@ -182,6 +211,15 @@ func updateToMaxMTU(ctx context.Context, vpnInterface string,
 	err = netlinker.LinkSetMTU(link.Index, vpnLinkMTU)
 	if err != nil {
 		return fmt.Errorf("setting VPN interface %s MTU to %d: %w", vpnInterface, vpnLinkMTU, err)
+	}
+
+	if !ipv6 {
+		icmpAddrs = slices.DeleteFunc(icmpAddrs, func(addr netip.Addr) bool {
+			return addr.Is6()
+		})
+		tcpAddrs = slices.DeleteFunc(tcpAddrs, func(addr netip.AddrPort) bool {
+			return addr.Addr().Is6()
+		})
 	}
 
 	const pingTimeout = time.Second
@@ -195,38 +233,36 @@ func updateToMaxMTU(ctx context.Context, vpnInterface string,
 		logger.Infof("setting VPN interface %s MTU to maximum valid MTU %d", vpnInterface, vpnLinkMTU)
 	}
 
+	err = setTCPMSSOnVPNRoutes(vpnLinkMTU, vpnRoutes, netlinker)
+	if err != nil {
+		err = fmt.Errorf("setting safe TCP MSS for MTU %d: %w", vpnLinkMTU, err)
+		vpnLinkMTU = originalMTU
+		logger.Infof("reverting VPN interface %s MTU to %d (due to: %s)",
+			vpnInterface, originalMTU, err)
+	}
+
 	err = netlinker.LinkSetMTU(link.Index, vpnLinkMTU)
 	if err != nil {
 		return fmt.Errorf("setting VPN interface %s MTU to %d: %w", vpnInterface, vpnLinkMTU, err)
 	}
 
-	err = setTCPMSSOnVPNRoute(vpnInterface, vpnLinkMTU, routing, netlinker)
-	if err != nil {
-		return fmt.Errorf("setting safe TCP MSS for MTU %d: %w", vpnLinkMTU, err)
-	}
-
 	return nil
 }
 
-func setTCPMSSOnVPNRoute(vpnIntf string, mtu uint32,
-	routing Routing, netlinker NetLinker,
-) error {
-	route, err := routing.VPNRoute(vpnIntf)
-	if err != nil {
-		return fmt.Errorf("getting VPN route: %w", err)
-	}
-
-	ipHeaderLength := pconstants.IPv4HeaderLength
-	if route.Dst.Addr().Is6() {
-		ipHeaderLength = pconstants.IPv6HeaderLength
-	}
-	const mysteriousOverhead = 20 // most likely TCP options, such as the 12B of timestamps
-	overhead := ipHeaderLength + pconstants.BaseTCPHeaderLength + mysteriousOverhead
-	mss := mtu - overhead
-	route.AdvMSS = mss
-	err = netlinker.RouteReplace(route)
-	if err != nil {
-		return fmt.Errorf("replacing VPN route with MSS changed to %d: %w", mss, err)
+func setTCPMSSOnVPNRoutes(mtu uint32, routes []netlink.Route, netlinker NetLinker) error {
+	for _, route := range routes {
+		ipHeaderLength := pconstants.IPv4HeaderLength
+		if route.Dst.Addr().Is6() {
+			ipHeaderLength = pconstants.IPv6HeaderLength
+		}
+		const mysteriousOverhead = 20 // most likely TCP options, such as the 12B of timestamps
+		overhead := ipHeaderLength + pconstants.BaseTCPHeaderLength + mysteriousOverhead
+		mss := mtu - overhead
+		route.AdvMSS = mss
+		err := netlinker.RouteReplace(route)
+		if err != nil {
+			return fmt.Errorf("replacing route %v: %w", route, err)
+		}
 	}
 	return nil
 }
