@@ -27,7 +27,7 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 	defer f.mutex.Unlock()
 
 	// Netfilter marks are 32-bit values.
-	if excludeMark < 0 || excludeMark > math.MaxUint32 {
+	if excludeMark < 0 || uint64(excludeMark) > math.MaxUint32 {
 		return nil, fmt.Errorf("exclude mark out of range: %d", excludeMark)
 	}
 
