@@ -312,8 +312,8 @@ func parseChainRuleOptionalFields(optionalFields []string, rule *chainRule) (err
 				rule.setMark = value
 				i++
 			default:
-				return fmt.Errorf("%w: unexpected %q after CONNMARK",
-					ErrChainRuleMalformed, optionalFields[i])
+				return fmt.Errorf("chain rule is malformed: unexpected %q after CONNMARK",
+					optionalFields[i])
 			}
 		default:
 			return fmt.Errorf("chain rule is malformed: unexpected optional field: %s",

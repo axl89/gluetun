@@ -39,9 +39,11 @@ func findHighestMSSDestination(ctx context.Context, familyToFD map[int]fileDescr
 	for range dsts {
 		result := <-resultCh
 		if result.err != nil {
+			missingMarkModule := errors.Is(result.err, iptables.ErrKernelModuleMissing) ||
+				errors.Is(result.err, iptables.ErrMarkMatchModuleMissing)
 			switch {
 			case err != nil: // error already occurred for another findMSS goroutine
-			case errors.Is(result.err, iptables.ErrKernelModuleMissing):
+			case missingMarkModule:
 				err = fmt.Errorf("finding MSS for %s: %w", result.dst, result.err)
 			default: // another error not due to the match module missing
 				logger.Debugf("finding MSS for %s failed: %s", result.dst, result.err)

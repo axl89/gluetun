@@ -232,8 +232,7 @@ func parseJumpFlag(fields []string, instruction *iptablesInstruction) (consumed 
 	// consumed already accounts for the "CONNMARK" value
 	const expectedFields = 3
 	if len(fields) < expectedFields {
-		return 0, fmt.Errorf("%w: jump CONNMARK requires at least two additional values",
-			ErrIptablesCommandMalformed)
+		return 0, fmt.Errorf("iptables command is malformed: jump CONNMARK requires at least two additional values")
 	}
 	switch fields[1] {
 	case "--set-mark":
@@ -244,8 +243,8 @@ func parseJumpFlag(fields []string, instruction *iptablesInstruction) (consumed 
 		consumed++
 		instruction.setMark = n
 	default:
-		return consumed, fmt.Errorf("%w: unsupported jump CONNMARK with value: %s",
-			ErrIptablesCommandMalformed, fields[1])
+		return consumed, fmt.Errorf("iptables command is malformed: unsupported jump CONNMARK with value: %s",
+			fields[1])
 	}
 	consumed++
 	return consumed, nil
@@ -314,8 +313,8 @@ func parseMatchModule(fields []string, instruction *iptablesInstruction) (
 			consumed++
 			instruction.connMark.invert = true
 		default:
-			return consumed, fmt.Errorf("%w: unsupported match connmark with value: %s",
-				ErrIptablesCommandMalformed, fields[2])
+			return consumed, fmt.Errorf("iptables command is malformed: unsupported match connmark with value: %s",
+				fields[2])
 		}
 	default:
 		return 0, fmt.Errorf("iptables command is malformed: unknown match value: %s",

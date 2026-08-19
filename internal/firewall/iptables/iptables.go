@@ -170,9 +170,7 @@ func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context) error {
 	appendToBoth("-I OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -m connmark --mark 0x567 -j ACCEPT")
 
 	c.iptablesMutex.Lock()
-	c.ip6tablesMutex.Lock()
 	defer c.iptablesMutex.Unlock()
-	defer c.ip6tablesMutex.Unlock()
 
 	restore, err := c.saveAndRestore(ctx)
 	if err != nil {
