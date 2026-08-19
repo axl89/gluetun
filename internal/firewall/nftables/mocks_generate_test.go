@@ -1,3 +1,5 @@
+//go:build linux
+
 package nftables
 
 //go:generate mockgen -destination=mocks_test.go -package=$GOPACKAGE . CmdRunner,Logger
