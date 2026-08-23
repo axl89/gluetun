@@ -148,6 +148,12 @@ func (c *Config) AcceptEstablishedRelatedTraffic(ctx context.Context) error {
 	})
 }
 
+// publicOnlyChainName is the name of the custom iptables chain created by the
+// public output traffic fallbacks. It is prefixed with GLUETUN to avoid
+// clashing with a chain of the same name that a user or another application
+// may have created.
+const publicOnlyChainName = "GLUETUN_PUBLIC_ONLY"
+
 // AcceptOutputPublicOnlyNewTraffic adds rules to mark new output connections, and to accept
 // established or related packets with this mark only. This effectively forces
 // previously established or related traffic to be blocked, which is used as a fallback
@@ -160,13 +166,15 @@ func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context) error {
 	}
 
 	// Mark new connections with mark 0x567
-	appendToBoth("-A PUBLIC_ONLY -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x567")
+	appendToBoth(fmt.Sprintf("-A %s -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x567",
+		publicOnlyChainName))
 	// Drop related/established connections that made it through; marked connections would
 	// be directly accepted by the first rule in the OUTPUT chain (see below)
-	appendToBoth("-A PUBLIC_ONLY -m conntrack --ctstate RELATED,ESTABLISHED -j DROP")
-	// Set the PUBLIC_ONLY chain as the second rule in the OUTPUT chain, so that it is evaluated
+	appendToBoth(fmt.Sprintf("-A %s -m conntrack --ctstate RELATED,ESTABLISHED -j DROP",
+		publicOnlyChainName))
+	// Set the chain as the second rule in the OUTPUT chain, so that it is evaluated
 	// after the accept rule below, for performance reasons.
-	appendToBoth("-I OUTPUT -j PUBLIC_ONLY")
+	appendToBoth("-I OUTPUT -j " + publicOnlyChainName)
 	appendToBoth("-I OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -m connmark --mark 0x567 -j ACCEPT")
 
 	c.iptablesMutex.Lock()
@@ -201,15 +209,15 @@ func (c *Config) DropOutputPublicTraffic(ctx context.Context, remove bool) error
 
 func (c *Config) targetOutputPublicTraffic(ctx context.Context, target string, remove bool) error {
 	removeInstructions := []string{
-		"-D OUTPUT -j PUBLIC_ONLY",
-		"-F PUBLIC_ONLY",
-		"-X PUBLIC_ONLY",
+		"-D OUTPUT -j " + publicOnlyChainName,
+		"-F " + publicOnlyChainName,
+		"-X " + publicOnlyChainName,
 	}
 	if remove {
 		return c.runMixedIptablesInstructions(ctx, removeInstructions)
 	}
 
-	ipv4Instructions, ipv6Instructions := makeCreatePublicIPChainInstructions()
+	ipv4Instructions, ipv6Instructions := makeCreatePublicIPChainInstructions(localPrefixes)
 	appendToBoth := func(instruction string) {
 		ipv4Instructions = append(ipv4Instructions, instruction)
 		ipv6Instructions = append(ipv6Instructions, instruction)
@@ -217,14 +225,16 @@ func (c *Config) targetOutputPublicTraffic(ctx context.Context, target string, r
 
 	if target == "REJECT" {
 		// Block TCP by sending back TCP RST packets.
-		appendToBoth("-A PUBLIC_ONLY -p tcp -m conntrack --ctstate RELATED,ESTABLISHED " +
-			"-j REJECT --reject-with tcp-reset")
+		appendToBoth(fmt.Sprintf("-A %s -p tcp -m conntrack --ctstate RELATED,ESTABLISHED "+
+			"-j REJECT --reject-with tcp-reset", publicOnlyChainName))
 		// Block UDP and ICMP, sending back ICMP port unreachable.
-		appendToBoth("-A PUBLIC_ONLY -m conntrack --ctstate RELATED,ESTABLISHED -j REJECT")
+		appendToBoth(fmt.Sprintf("-A %s -m conntrack --ctstate RELATED,ESTABLISHED -j REJECT",
+			publicOnlyChainName))
 	} else {
-		appendToBoth("-A PUBLIC_ONLY -m conntrack --ctstate RELATED,ESTABLISHED -j " + target)
+		appendToBoth(fmt.Sprintf("-A %s -m conntrack --ctstate RELATED,ESTABLISHED -j %s",
+			publicOnlyChainName, target))
 	}
-	appendToBoth("-I OUTPUT -j PUBLIC_ONLY")
+	appendToBoth("-I OUTPUT -j " + publicOnlyChainName)
 
 	err := c.runIptablesInstructions(ctx, ipv4Instructions)
 	if err != nil {
@@ -258,17 +268,17 @@ func makeCreatePublicIPChainInstructions() (ipv4Instructions, ipv6Instructions [
 		netip.MustParsePrefix("::1/128"),
 	}
 
-	ipv4Instructions = append(ipv4Instructions, "-N PUBLIC_ONLY")
-	ipv6Instructions = append(ipv6Instructions, "-N PUBLIC_ONLY")
+	ipv4Instructions = append(ipv4Instructions, "-N "+publicOnlyChainName)
+	ipv6Instructions = append(ipv6Instructions, "-N "+publicOnlyChainName)
 
 	for _, prefix := range ipv4PrivatePrefixes {
 		ipv4Instructions = append(ipv4Instructions, fmt.Sprintf(
-			"-A PUBLIC_ONLY -d %s -j RETURN", prefix))
+			"-A %s -d %s -j RETURN", publicOnlyChainName, prefix))
 	}
 
 	for _, prefix := range ipv6PrivatePrefixes {
 		ipv6Instructions = append(ipv6Instructions, fmt.Sprintf(
-			"-A PUBLIC_ONLY -d %s -j RETURN", prefix))
+			"-A %s -d %s -j RETURN", publicOnlyChainName, prefix))
 	}
 
 	return ipv4Instructions, ipv6Instructions
