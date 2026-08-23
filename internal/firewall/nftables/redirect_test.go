@@ -12,23 +12,16 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func testNatTable() *nftables.Table {
-	return &nftables.Table{Family: nftables.TableFamilyINet, Name: natTableName}
-}
-
-func testNatPreroutingChain() *nftables.Chain {
+func testPreroutingChain() *nftables.Chain {
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
 	return &nftables.Chain{
-		Name: preroutingChainName, Table: testNatTable(), Type: nftables.ChainTypeNAT,
+		Name: preroutingChainName, Table: table, Type: nftables.ChainTypeNAT,
 		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest,
 	}
 }
 
-func testFilterAndNatTables() []*nftables.Table {
-	return append(testFilterTables(), testNatTable())
-}
-
-func testFilterAndNatChains() []*nftables.Chain {
-	return append(testFilterChainsAll(), testNatPreroutingChain())
+func testGluetunChainsAll() []*nftables.Chain {
+	return append(testBaseChainsAll(), testPreroutingChain())
 }
 
 // expected-value builders mirroring the production redirect rule composition.
@@ -62,8 +55,8 @@ func expectedRedirectInputExprs(intf string, protocol uint8, destinationPort uin
 func Test_buildRedirectPrerouteRule(t *testing.T) {
 	t.Parallel()
 
-	natTable := testNatTable()
-	preroutingChain := testNatPreroutingChain()
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
+	preroutingChain := testPreroutingChain()
 	sourcePort, destinationPort := uint16(12345), uint16(51820)
 
 	testCases := map[string]struct {
@@ -79,10 +72,10 @@ func Test_buildRedirectPrerouteRule(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			rule := buildRedirectPrerouteRule(natTable, preroutingChain,
+			rule := buildRedirectPrerouteRule(table, preroutingChain,
 				testCase.intf, testCase.protocol, sourcePort, destinationPort)
 
-			assert.Equal(t, natTable, rule.Table)
+			assert.Equal(t, table, rule.Table)
 			assert.Equal(t, preroutingChain, rule.Chain)
 			assert.Equal(t, expectedPrerouteExprs(testCase.intf, testCase.protocol,
 				sourcePort, destinationPort), rule.Exprs)
@@ -93,7 +86,7 @@ func Test_buildRedirectPrerouteRule(t *testing.T) {
 func Test_buildRedirectInputRule(t *testing.T) {
 	t.Parallel()
 
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
 	inputChain := &nftables.Chain{Name: inputChainName, Table: table}
 	destinationPort := uint16(51820)
 
@@ -126,21 +119,20 @@ func Test_RedirectPort(t *testing.T) {
 	intf := "tun0"
 	sourcePort, destinationPort := uint16(12345), uint16(51820)
 
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
+	preroutingChain := testPreroutingChain()
+	inputChain := &nftables.Chain{Name: inputChainName, Table: table}
+
 	// Pre-built tracked rules for the remove case (as they were added).
 	buildTrackedRules := func() []*nftables.Rule {
-		natTable := testNatTable()
-		preroutingChain := testNatPreroutingChain()
-		filterTable := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
-		inputChain := &nftables.Chain{Name: inputChainName, Table: filterTable}
-
 		var rules []*nftables.Rule
 		for _, protocol := range [2]uint8{protocolTCP, protocolUDP} {
 			preroute := &nftables.Rule{
-				Table: natTable, Chain: preroutingChain,
+				Table: table, Chain: preroutingChain,
 				Exprs: expectedPrerouteExprs(intf, protocol, sourcePort, destinationPort),
 			}
 			input := &nftables.Rule{
-				Table: filterTable, Chain: inputChain,
+				Table: table, Chain: inputChain,
 				Exprs: expectedRedirectInputExprs(intf, protocol, destinationPort),
 			}
 			rules = append(rules, preroute, input)
@@ -151,7 +143,7 @@ func Test_RedirectPort(t *testing.T) {
 	testCases := map[string]struct {
 		remove bool
 	}{
-		"add_new_tables":  {remove: false},
+		"add_new_table":   {remove: false},
 		"remove_existing": {remove: true},
 	}
 
@@ -164,11 +156,11 @@ func Test_RedirectPort(t *testing.T) {
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
 			if !testCase.remove {
-				// Add path: create the filter and nat tables/chain, add 4 rules.
-				mockConn.EXPECT().ListTables().Return(nil, nil).Times(2)
+				// Add path: create the table/4 chains, add 4 rules.
+				mockConn.EXPECT().ListTables().Return(nil, nil)
 				mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
 					return table
-				}).Times(2)
+				})
 				mockConn.EXPECT().AddChain(gomock.Any()).DoAndReturn(func(chain *nftables.Chain) *nftables.Chain {
 					return chain
 				}).Times(4)
@@ -200,10 +192,10 @@ func Test_RedirectPort(t *testing.T) {
 				return
 			}
 
-			// Remove path: filter and nat tables/chains exist, delete 4 rules.
+			// Remove path: table/chains exist, delete 4 rules.
 			f.rules = buildTrackedRules()
-			mockConn.EXPECT().ListTables().Return(testFilterAndNatTables(), nil).Times(2)
-			mockConn.EXPECT().ListChains().Return(testFilterAndNatChains(), nil).Times(2)
+			mockConn.EXPECT().ListTables().Return(testGluetunTables(), nil)
+			mockConn.EXPECT().ListChains().Return(testGluetunChainsAll(), nil).Times(2)
 
 			mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).DoAndReturn(
 				func(table *nftables.Table, chain *nftables.Chain) ([]*nftables.Rule, error) {

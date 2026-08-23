@@ -10,8 +10,8 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func testFilterChains() (inputChain, forwardChain, outputChain *nftables.Chain) {
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+func testBaseChains() (inputChain, forwardChain, outputChain *nftables.Chain) {
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
 	return &nftables.Chain{
 			Name: inputChainName, Table: table, Type: nftables.ChainTypeFilter,
 			Hooknum: nftables.ChainHookInput, Priority: nftables.ChainPriorityFilter,
@@ -24,7 +24,7 @@ func testFilterChains() (inputChain, forwardChain, outputChain *nftables.Chain) 
 		}
 }
 
-func Test_setupFilterWithBaseChains(t *testing.T) {
+func Test_setupBaseChains(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
@@ -43,28 +43,28 @@ func Test_setupFilterWithBaseChains(t *testing.T) {
 		},
 		"table_missing_chains_present_but_table_missing": {
 			tables:   nil,
-			chains:   testFilterChainsAll(),
+			chains:   testBaseChainsAll(),
 			policy:   nil,
 			addTable: true,
 			addChain: 3,
 		},
 		"table_present_chains_missing": {
-			tables:   testFilterTables(),
+			tables:   testGluetunTables(),
 			chains:   nil,
 			policy:   nil,
 			addTable: false,
 			addChain: 3,
 		},
 		"table_and_chains_present_no_policy": {
-			tables:   testFilterTables(),
-			chains:   testFilterChainsAll(),
+			tables:   testGluetunTables(),
+			chains:   testBaseChainsAll(),
 			policy:   nil,
 			addTable: false,
 			addChain: 0,
 		},
 		"table_and_chains_present_with_policy": {
-			tables:   testFilterTables(),
-			chains:   testFilterChainsAll(),
+			tables:   testGluetunTables(),
+			chains:   testBaseChainsAll(),
 			policy:   testPolicyDrop(),
 			addTable: false,
 			addChain: 3,
@@ -98,13 +98,13 @@ func Test_setupFilterWithBaseChains(t *testing.T) {
 				return chain
 			}).Times(testCase.addChain)
 
-			resultTable, resultInputChain, resultForwardChain, resultOutputChain, err := setupFilterWithBaseChains(
+			resultTable, resultInputChain, resultForwardChain, resultOutputChain, err := setupBaseChains(
 				mockConn, testCase.policy,
 			)
 
 			assert.NoError(t, err)
 
-			assert.Equal(t, "filter", resultTable.Name)
+			assert.Equal(t, gluetunTableName, resultTable.Name)
 			assert.Equal(t, nftables.TableFamilyINet, resultTable.Family)
 
 			assertChain(t, resultInputChain, "input", nftables.ChainHookInput, testCase.policy)
@@ -129,12 +129,12 @@ func assertChain(t *testing.T, chain *nftables.Chain, name string,
 	}
 }
 
-func testFilterTables() []*nftables.Table {
-	return []*nftables.Table{{Family: nftables.TableFamilyINet, Name: filterTableName}}
+func testGluetunTables() []*nftables.Table {
+	return []*nftables.Table{{Family: nftables.TableFamilyINet, Name: gluetunTableName}}
 }
 
-func testFilterChainsAll() []*nftables.Chain {
-	inputChain, forwardChain, outputChain := testFilterChains()
+func testBaseChainsAll() []*nftables.Chain {
+	inputChain, forwardChain, outputChain := testBaseChains()
 	return []*nftables.Chain{inputChain, forwardChain, outputChain}
 }
 

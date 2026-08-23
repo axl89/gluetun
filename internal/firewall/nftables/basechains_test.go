@@ -83,14 +83,14 @@ func Test_SetBaseChainsPolicy(t *testing.T) {
 		},
 		"accept_existing": {
 			policy:   "accept",
-			tables:   testFilterTables(),
-			chains:   testFilterChainsAll(),
+			tables:   testGluetunTables(),
+			chains:   testBaseChainsAll(),
 			addChain: 3,
 		},
 		"drop_existing": {
 			policy:   "drop",
-			tables:   testFilterTables(),
-			chains:   testFilterChainsAll(),
+			tables:   testGluetunTables(),
+			chains:   testBaseChainsAll(),
 			addChain: 3,
 		},
 		"unknown_policy": {

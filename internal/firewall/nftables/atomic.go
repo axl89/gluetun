@@ -9,13 +9,25 @@ import (
 	"github.com/google/nftables"
 )
 
-// SaveAndRestore saves the current nftables tree and returns a restore
-// function that can be called to restore the saved tree.
+// SaveAndRestore saves the current nftables state and the tracked rules, and
+// returns a restore function that can be called to restore the saved state.
 func (f *Firewall) SaveAndRestore(_ context.Context) (func(context.Context), error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	innerRestore, err := f.saveAndRestoreLocked()
+	conn, err := f.dialFunc()
+	if err != nil {
+		return nil, fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	// The owned table can only exist if a previous session did not restore
+	// it (for example a crash), so it is stale by definition and must be
+	// removed before the save, otherwise the restore would resurrect it.
+	if err := f.removeStaleOwnedTable(conn); err != nil {
+		return nil, fmt.Errorf("removing stale %s table: %w", gluetunTableName, err)
+	}
+
+	innerRestore, err := f.saveAndRestoreLocked(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -29,36 +41,52 @@ func (f *Firewall) SaveAndRestore(_ context.Context) (func(context.Context), err
 	}, nil
 }
 
-// saveAndRestoreLocked saves the current nftables tree and returns a restore
-// function. Callers MUST hold the mutex, and the returned restore function
-// requires it to be held as well.
-func (f *Firewall) saveAndRestoreLocked() (restore func(context.Context), err error) {
-	conn, err := f.dialFunc()
-	if err != nil {
-		return nil, fmt.Errorf("creating nftables connection: %w", err)
-	}
-
-	tables, err := saveTables(conn)
+// saveAndRestoreLocked saves the current nftables state and the tracked rules,
+// and returns a restore function that restores both. Callers MUST hold the
+// mutex, and the returned restore function requires it to be held as well.
+func (f *Firewall) saveAndRestoreLocked(conn conn) (restore func(context.Context), err error) {
+	savedTables, err := saveTables(conn)
 	if err != nil {
 		return nil, fmt.Errorf("saving nftables state: %w", err)
 	}
 
+	// Snapshot the tracked rules so that the restore can return the tracker to
+	// the saved state, avoiding stale or duplicated tracking across
+	// disable/enable cycles.
+	savedRules := make([]*nftables.Rule, len(f.rules))
+	copy(savedRules, f.rules)
+
 	return func(ctx context.Context) {
-		f.restoreTablesLocked(ctx, tables)
+		f.restoreStateLocked(ctx, savedTables, savedRules)
 	}, nil
 }
 
-// restoreTablesLocked restores the saved nftables tree, logging a warning on
-// failure. Callers MUST hold the mutex.
-func (f *Firewall) restoreTablesLocked(_ context.Context, tables []savedTable) {
+// removeStaleOwnedTable removes the backend-owned table if it exists.
+func (f *Firewall) removeStaleOwnedTable(conn conn) error {
+	table, found, err := getGluetunTable(conn)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	conn.DelTable(table)
+	return conn.Flush()
+}
+
+// restoreStateLocked restores the saved nftables state and tracked rules,
+// logging a warning on failure. Callers MUST hold the mutex.
+func (f *Firewall) restoreStateLocked(_ context.Context, tables []savedTable, rules []*nftables.Rule) {
 	conn, err := f.dialFunc()
 	if err != nil {
 		f.logger.Warnf("creating nftables connection for restore: %s", err)
-		return
-	}
-	if err := restoreTables(conn, tables); err != nil {
+	} else if err := restoreTables(conn, tables); err != nil {
 		f.logger.Warnf("restoring nftables state: %s", err)
 	}
+
+	// Reset the tracker to the saved state, so that rules added by the session
+	// are not tracked (and later removed as duplicates) after the restore.
+	f.rules = rules
 }
 
 type tableKey struct {
@@ -112,10 +140,29 @@ func saveTables(conn conn) ([]savedTable, error) {
 	return savedTables, nil
 }
 
-// restoreTables re-adds all the saved tables, chains, and rules, the way
-// iptables-restore does: the rules of each saved chain are replaced by the
-// saved ones, while other tables and chains are left untouched.
+// restoreTables restores the saved nftables state: tables created after the
+// save are removed (the backend only creates its owned table, and user post
+// rules are re-run at the next enable), then each saved chain is flushed and
+// its saved rules re-added, the way iptables-restore does, while other
+// pre-existing state is left untouched.
 func restoreTables(conn conn, savedTables []savedTable) error {
+	savedTableKeys := make(map[tableKey]struct{}, len(savedTables))
+	for _, savedTable := range savedTables {
+		savedTableKeys[tableKey{family: savedTable.table.Family, name: savedTable.table.Name}] = struct{}{}
+	}
+
+	tables, err := conn.ListTables()
+	if err != nil {
+		return fmt.Errorf("listing tables: %w", err)
+	}
+	for _, table := range tables {
+		key := tableKey{family: table.Family, name: table.Name}
+		if _, saved := savedTableKeys[key]; saved {
+			continue
+		}
+		conn.DelTable(table)
+	}
+
 	for _, savedTable := range savedTables {
 		table := conn.AddTable(savedTable.table)
 		for _, savedChain := range savedTable.chains {

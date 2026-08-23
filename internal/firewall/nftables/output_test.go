@@ -70,7 +70,7 @@ func expectedOutputIntfExprs(intf string) []expr.Any {
 
 // mock setup helpers for the filter table.
 
-func expectNewFilterTable(mockConn *MockConn) {
+func expectNewGluetunTable(mockConn *MockConn) {
 	mockConn.EXPECT().ListTables().Return(nil, nil)
 	mockConn.EXPECT().AddTable(gomock.Any()).DoAndReturn(func(table *nftables.Table) *nftables.Table {
 		return table
@@ -80,9 +80,9 @@ func expectNewFilterTable(mockConn *MockConn) {
 	}).Times(3)
 }
 
-func expectExistingFilterTable(mockConn *MockConn) {
-	mockConn.EXPECT().ListTables().Return(testFilterTables(), nil)
-	mockConn.EXPECT().ListChains().Return(testFilterChainsAll(), nil)
+func expectExistingGluetunTable(mockConn *MockConn) {
+	mockConn.EXPECT().ListTables().Return(testGluetunTables(), nil)
+	mockConn.EXPECT().ListChains().Return(testBaseChainsAll(), nil)
 }
 
 func Test_AcceptIpv6MulticastOutput(t *testing.T) {
@@ -103,7 +103,7 @@ func Test_AcceptIpv6MulticastOutput(t *testing.T) {
 			mockConn := NewMockConn(ctrl)
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
-			expectNewFilterTable(mockConn)
+			expectNewGluetunTable(mockConn)
 
 			var addedRule *nftables.Rule
 			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
@@ -154,13 +154,13 @@ func Test_AcceptOutputTrafficToVPN(t *testing.T) {
 			var addedRule *nftables.Rule
 			if testCase.remove {
 				f.rules = []*nftables.Rule{{Exprs: expectedExprs}}
-				expectExistingFilterTable(mockConn)
+				expectExistingGluetunTable(mockConn)
 				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(
 					[]*nftables.Rule{{Handle: 42, Exprs: expectedExprs}}, nil,
 				)
 				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil)
 			} else {
-				expectNewFilterTable(mockConn)
+				expectNewGluetunTable(mockConn)
 				mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
 					addedRule = rule
 					return rule
@@ -236,13 +236,13 @@ func Test_AcceptOutput(t *testing.T) {
 
 			if testCase.remove {
 				f.rules = []*nftables.Rule{{Exprs: expectedExprs}}
-				expectExistingFilterTable(mockConn)
+				expectExistingGluetunTable(mockConn)
 				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(
 					[]*nftables.Rule{{Handle: 42, Exprs: expectedExprs}}, nil,
 				)
 				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil)
 			} else {
-				expectNewFilterTable(mockConn)
+				expectNewGluetunTable(mockConn)
 			}
 
 			var addedRule *nftables.Rule
@@ -277,13 +277,28 @@ func Test_AcceptOutputFromIPPortToIPPort(t *testing.T) {
 	destination := netip.MustParseAddrPort("10.8.0.1:51820")
 
 	testCases := map[string]struct {
-		protocol string
-		intf     string
-		remove   bool
+		protocol      string
+		intf          string
+		source        netip.AddrPort
+		destination   netip.AddrPort
+		remove        bool
+		expectedError string
 	}{
-		"udp_with_interface": {protocol: "udp", intf: "tun0"},
-		"tcp_no_interface":   {protocol: "tcp", intf: ""},
-		"remove":             {protocol: "udp", intf: "tun0", remove: true},
+		"udp_with_interface": {
+			protocol: "udp", intf: "tun0", source: source, destination: destination,
+		},
+		"tcp_no_interface": {
+			protocol: "tcp", intf: "", source: source, destination: destination,
+		},
+		"remove": {
+			protocol: "udp", intf: "tun0", source: source, destination: destination, remove: true,
+		},
+		"mixed_address_families": {
+			protocol: "tcp", intf: "",
+			source:        netip.MustParseAddrPort("10.8.0.2:44444"),
+			destination:   netip.MustParseAddrPort("[fd00::1]:51820"),
+			expectedError: "source and destination address families do not match",
+		},
 	}
 
 	for name, testCase := range testCases {
@@ -292,18 +307,26 @@ func Test_AcceptOutputFromIPPortToIPPort(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockConn := NewMockConn(ctrl)
-			expectedExprs := expectedOutputIPPortExprs(t, testCase.protocol, testCase.intf,
-				source, destination)
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
+
+			if testCase.expectedError != "" {
+				err := f.AcceptOutputFromIPPortToIPPort(t.Context(), testCase.protocol, testCase.intf,
+					testCase.source, testCase.destination, testCase.remove)
+				assert.ErrorContains(t, err, testCase.expectedError)
+				return
+			}
+
+			expectedExprs := expectedOutputIPPortExprs(t, testCase.protocol, testCase.intf,
+				testCase.source, testCase.destination)
 			if testCase.remove {
 				f.rules = []*nftables.Rule{{Exprs: expectedExprs}}
-				expectExistingFilterTable(mockConn)
+				expectExistingGluetunTable(mockConn)
 				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(
 					[]*nftables.Rule{{Handle: 42, Exprs: expectedExprs}}, nil,
 				)
 				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil)
 			} else {
-				expectNewFilterTable(mockConn)
+				expectNewGluetunTable(mockConn)
 			}
 
 			var addedRule *nftables.Rule
@@ -316,7 +339,7 @@ func Test_AcceptOutputFromIPPortToIPPort(t *testing.T) {
 			mockConn.EXPECT().Flush().Return(nil)
 
 			err := f.AcceptOutputFromIPPortToIPPort(t.Context(), testCase.protocol, testCase.intf,
-				source, destination, testCase.remove)
+				testCase.source, testCase.destination, testCase.remove)
 
 			assert.NoError(t, err)
 			if !testCase.remove {
@@ -335,10 +358,11 @@ func Test_AcceptOutputFromIPToSubnet(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		intf       string
-		assignedIP netip.Addr
-		subnet     netip.Prefix
-		remove     bool
+		intf          string
+		assignedIP    netip.Addr
+		subnet        netip.Prefix
+		remove        bool
+		expectedError string
 	}{
 		"ipv4_with_interface": {
 			intf:       "tun0",
@@ -356,6 +380,12 @@ func Test_AcceptOutputFromIPToSubnet(t *testing.T) {
 			subnet:     netip.MustParsePrefix("192.168.0.0/16"),
 			remove:     true,
 		},
+		"mixed_address_families": {
+			intf:          "",
+			assignedIP:    netip.MustParseAddr("10.8.0.2"),
+			subnet:        netip.MustParsePrefix("fd00::/8"),
+			expectedError: "source and destination address families do not match",
+		},
 	}
 
 	for name, testCase := range testCases {
@@ -364,18 +394,26 @@ func Test_AcceptOutputFromIPToSubnet(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockConn := NewMockConn(ctrl)
+			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
+
+			if testCase.expectedError != "" {
+				err := f.AcceptOutputFromIPToSubnet(t.Context(), testCase.intf,
+					testCase.assignedIP, testCase.subnet, testCase.remove)
+				assert.ErrorContains(t, err, testCase.expectedError)
+				return
+			}
+
 			expectedExprs := expectedOutputSubnetExprs(testCase.intf,
 				testCase.assignedIP, testCase.subnet)
-			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 			if testCase.remove {
 				f.rules = []*nftables.Rule{{Exprs: expectedExprs}}
-				expectExistingFilterTable(mockConn)
+				expectExistingGluetunTable(mockConn)
 				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(
 					[]*nftables.Rule{{Handle: 42, Exprs: expectedExprs}}, nil,
 				)
 				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil)
 			} else {
-				expectNewFilterTable(mockConn)
+				expectNewGluetunTable(mockConn)
 			}
 
 			var addedRule *nftables.Rule
@@ -426,13 +464,13 @@ func Test_AcceptOutputThroughInterface(t *testing.T) {
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 			if testCase.remove {
 				f.rules = []*nftables.Rule{{Exprs: expectedExprs}}
-				expectExistingFilterTable(mockConn)
+				expectExistingGluetunTable(mockConn)
 				mockConn.EXPECT().GetRules(gomock.Any(), gomock.Any()).Return(
 					[]*nftables.Rule{{Handle: 42, Exprs: expectedExprs}}, nil,
 				)
 				mockConn.EXPECT().DelRule(gomock.Any()).Return(nil)
 			} else {
-				expectNewFilterTable(mockConn)
+				expectNewGluetunTable(mockConn)
 			}
 
 			var addedRule *nftables.Rule

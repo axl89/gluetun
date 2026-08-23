@@ -21,9 +21,9 @@ func (f *Firewall) AcceptEstablishedRelatedTraffic(_ context.Context) error {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, inputChain, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	const establishedRelatedMask = byte(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED)

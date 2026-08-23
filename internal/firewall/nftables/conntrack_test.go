@@ -24,8 +24,8 @@ func Test_AcceptEstablishedRelatedTraffic(t *testing.T) {
 			chains: nil,
 		},
 		"table_present": {
-			tables: testFilterTables(),
-			chains: testFilterChainsAll(),
+			tables: testGluetunTables(),
+			chains: testBaseChainsAll(),
 		},
 	}
 

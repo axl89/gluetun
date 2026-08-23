@@ -4,12 +4,18 @@ package nftables
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
 	"github.com/google/nftables/expr"
 	"github.com/qdm12/gluetun/internal/models"
 )
+
+// errAddressFamiliesMismatch is returned when a method receives source and
+// destination addresses of different address families, as the resulting rule
+// could never match any packet.
+var errAddressFamiliesMismatch = errors.New("source and destination address families do not match")
 
 // AcceptIpv6MulticastOutput accepts outgoing traffic to the IPv6 multicast
 // address ff02::1:ff00:0/104, which is used for NDP (Neighbor Discovery
@@ -24,9 +30,9 @@ func (f *Firewall) AcceptIpv6MulticastOutput(_ context.Context, intf string) err
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	// ff02::1:ff00:0/104 is a subset of the solicited-node multicast space.
@@ -58,9 +64,9 @@ func (f *Firewall) AcceptOutputTrafficToVPN(_ context.Context, intf string,
 		return err
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(outputInterfaceExprs(intf), destinationIPExprs(connection.IP)...)
@@ -91,9 +97,9 @@ func (f *Firewall) AcceptOutput(_ context.Context, protocol, intf string,
 		return err
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(outputInterfaceExprs(intf), destinationIPExprs(ip)...)
@@ -112,6 +118,10 @@ func (f *Firewall) AcceptOutput(_ context.Context, protocol, intf string,
 func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, intf string,
 	source, destination netip.AddrPort, remove bool,
 ) error {
+	if source.Addr().BitLen() != destination.Addr().BitLen() {
+		return errAddressFamiliesMismatch
+	}
+
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
@@ -125,9 +135,9 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 		return err
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(outputInterfaceExprs(intf), sourceIPExprs(source.Addr())...)
@@ -147,6 +157,10 @@ func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, protocol, i
 func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string,
 	assignedIP netip.Addr, subnet netip.Prefix, remove bool,
 ) error {
+	if assignedIP.BitLen() != subnet.Addr().BitLen() {
+		return errAddressFamiliesMismatch
+	}
+
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
@@ -155,9 +169,9 @@ func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, intf string,
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(outputInterfaceExprs(intf), sourceIPExprs(assignedIP)...)
@@ -179,9 +193,9 @@ func (f *Firewall) AcceptOutputThroughInterface(_ context.Context, intf string, 
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(outputInterfaceExprs(intf), &expr.Verdict{Kind: expr.VerdictAccept})

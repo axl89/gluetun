@@ -47,17 +47,20 @@ func (f *Firewall) AcceptIpv6MulticastOutput(_ context.Context, _ string) error 
 }
 
 func (f *Firewall) AcceptOutput(_ context.Context, _, _ string,
-	_ netip.Addr, _ uint16, _ bool) error {
+	_ netip.Addr, _ uint16, _ bool,
+) error {
 	return fmt.Errorf("%w", errNotImplemented)
 }
 
 func (f *Firewall) AcceptOutputFromIPPortToIPPort(_ context.Context, _, _ string,
-	_, _ netip.AddrPort, _ bool) error {
+	_, _ netip.AddrPort, _ bool,
+) error {
 	return fmt.Errorf("%w", errNotImplemented)
 }
 
 func (f *Firewall) AcceptOutputFromIPToSubnet(_ context.Context, _ string, _ netip.Addr,
-	_ netip.Prefix, _ bool) error {
+	_ netip.Prefix, _ bool,
+) error {
 	return fmt.Errorf("%w", errNotImplemented)
 }
 
@@ -66,7 +69,8 @@ func (f *Firewall) AcceptOutputThroughInterface(_ context.Context, _ string, _ b
 }
 
 func (f *Firewall) AcceptOutputTrafficToVPN(_ context.Context, _ string,
-	_ models.Connection, _ bool) error {
+	_ models.Connection, _ bool,
+) error {
 	return fmt.Errorf("%w", errNotImplemented)
 }
 
@@ -83,7 +87,8 @@ func (f *Firewall) SetBaseChainsPolicy(_ context.Context, _ string) error {
 }
 
 func (f *Firewall) TempDropOutputTCPRST(_ context.Context, _, _ netip.AddrPort, _ int) (
-	func(ctx context.Context) error, error) {
+	func(ctx context.Context) error, error,
+) {
 	return nil, fmt.Errorf("%w", errNotImplemented)
 }
 

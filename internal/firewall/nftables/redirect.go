@@ -11,64 +11,37 @@ import (
 	"github.com/google/nftables/expr"
 )
 
-const (
-	natTableName        = "nat"
-	preroutingChainName = "prerouting"
-)
+const preroutingChainName = "prerouting"
 
-// getNATWithPrerouting returns the inet nat table and its prerouting chain if
-// they exist, otherwise nil values.
-func getNATWithPrerouting(conn conn) (natTable *nftables.Table, preroutingChain *nftables.Chain, err error) {
-	tables, err := conn.ListTables()
-	if err != nil {
-		return nil, nil, fmt.Errorf("listing tables: %w", err)
+// getPreroutingChain returns the prerouting chain of the given table if it
+// exists.
+func getPreroutingChain(conn conn, table *nftables.Table) (*nftables.Chain, bool, error) {
+	if table == nil {
+		return nil, false, nil
 	}
-	for _, table := range tables {
-		if table.Family == nftables.TableFamilyINet && table.Name == natTableName {
-			natTable = table
-			break
-		}
-	}
-	if natTable == nil {
-		return nil, nil, nil
-	}
-
 	chains, err := conn.ListChains()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing chains: %w", err)
+		return nil, false, fmt.Errorf("listing chains: %w", err)
 	}
 	for _, chain := range chains {
-		if chain.Table.Family == natTable.Family && chain.Table.Name == natTable.Name &&
+		if chain.Table.Family == table.Family && chain.Table.Name == table.Name &&
 			chain.Name == preroutingChainName {
-			return natTable, chain, nil
+			return chain, true, nil
 		}
 	}
-	return natTable, nil, nil
+	return nil, false, nil
 }
 
-// setupNATWithPrerouting ensures that the inet nat table and its prerouting
-// chain exist, returning them.
-func setupNATWithPrerouting(conn conn) (*nftables.Table, *nftables.Chain, error) {
-	natTable, preroutingChain, err := getNATWithPrerouting(conn)
-	if err != nil {
-		return nil, nil, err
+// newPreroutingChain returns a new prerouting chain definition for the given
+// table.
+func newPreroutingChain(table *nftables.Table) *nftables.Chain {
+	return &nftables.Chain{
+		Name:     preroutingChainName,
+		Table:    table,
+		Type:     nftables.ChainTypeNAT,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityNATDest,
 	}
-	if natTable == nil {
-		natTable = conn.AddTable(&nftables.Table{
-			Family: nftables.TableFamilyINet,
-			Name:   natTableName,
-		})
-	}
-	if preroutingChain == nil {
-		preroutingChain = conn.AddChain(&nftables.Chain{
-			Name:     preroutingChainName,
-			Table:    natTable,
-			Type:     nftables.ChainTypeNAT,
-			Hooknum:  nftables.ChainHookPrerouting,
-			Priority: nftables.ChainPriorityNATDest,
-		})
-	}
-	return natTable, preroutingChain, nil
 }
 
 // RedirectPort redirects incoming traffic on the specified source port to the
@@ -88,26 +61,22 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
+	table, inputChain, _, _, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
-	var natTable *nftables.Table
 	var preroutingChain *nftables.Chain
 	if !remove {
-		natTable, preroutingChain, err = setupNATWithPrerouting(conn)
-		if err != nil {
-			return fmt.Errorf("setting up nat table: %w", err)
-		}
-	} else if natTable, preroutingChain, err = getNATWithPrerouting(conn); err != nil {
-		return fmt.Errorf("listing nat table: %w", err)
+		preroutingChain = conn.AddChain(newPreroutingChain(table))
+	} else if preroutingChain, _, err = getPreroutingChain(conn, table); err != nil {
+		return fmt.Errorf("listing prerouting chain: %w", err)
 	}
 
 	var addedRules []*nftables.Rule
 	var deletedRules []*nftables.Rule
 	for _, protocol := range [2]uint8{protocolTCP, protocolUDP} {
-		prerouteRule := buildRedirectPrerouteRule(natTable, preroutingChain,
+		prerouteRule := buildRedirectPrerouteRule(table, preroutingChain,
 			intf, protocol, sourcePort, destinationPort)
 		inputRule := buildRedirectInputRule(table, inputChain, intf, protocol, destinationPort)
 
@@ -118,7 +87,7 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 			continue
 		}
 
-		// The prerouting rule can only exist if the nat table and chain do.
+		// The prerouting rule can only exist if the prerouting chain does.
 		if preroutingChain != nil {
 			if err := f.deleteRule(conn, prerouteRule); err != nil {
 				return fmt.Errorf("deleting prerouting rule: %w", err)
@@ -149,7 +118,7 @@ func (f *Firewall) RedirectPort(_ context.Context, intf string,
 // buildRedirectPrerouteRule builds the prerouting rule redirecting traffic
 // arriving on the source port (matched as the destination port) to the
 // destination port, the way `nft` compiles `dnat to :port`.
-func buildRedirectPrerouteRule(natTable *nftables.Table, preroutingChain *nftables.Chain,
+func buildRedirectPrerouteRule(table *nftables.Table, preroutingChain *nftables.Chain,
 	intf string, protocol uint8, sourcePort, destinationPort uint16,
 ) *nftables.Rule {
 	const register uint32 = 1
@@ -169,7 +138,7 @@ func buildRedirectPrerouteRule(natTable *nftables.Table, preroutingChain *nftabl
 		},
 	)
 
-	return &nftables.Rule{Table: natTable, Chain: preroutingChain, Exprs: exprs}
+	return &nftables.Rule{Table: table, Chain: preroutingChain, Exprs: exprs}
 }
 
 // buildRedirectInputRule builds the input rule accepting traffic arriving on

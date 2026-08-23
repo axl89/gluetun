@@ -22,9 +22,9 @@ func (f *Firewall) AcceptInputThroughInterface(_ context.Context, intf string) e
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
+	table, inputChain, _, _, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(inputInterfaceExprs(intf), &expr.Verdict{Kind: expr.VerdictAccept})
@@ -46,9 +46,9 @@ func (f *Firewall) AcceptInputToPort(_ context.Context, intf string, port uint16
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
+	table, inputChain, _, _, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	var addedRules []*nftables.Rule
@@ -99,9 +99,9 @@ func (f *Firewall) AcceptInputToSubnet(_ context.Context, intf string, subnet ne
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, inputChain, _, _, err := setupFilterWithBaseChains(conn, nil)
+	table, inputChain, _, _, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(inputInterfaceExprs(intf), destinationSubnetExprs(subnet)...)

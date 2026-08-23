@@ -13,6 +13,7 @@ type conn interface {
 	AddChain(chain *nftables.Chain) *nftables.Chain
 	AddRule(rule *nftables.Rule) *nftables.Rule
 	DelRule(rule *nftables.Rule) error
+	DelTable(table *nftables.Table)
 	Flush() error
 }
 

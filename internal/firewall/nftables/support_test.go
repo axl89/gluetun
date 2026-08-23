@@ -20,13 +20,20 @@ type runResult struct {
 	err    error
 }
 
+// expectedWarning is the expected line number and line text of a warning
+// emitted by parseUserRules.
+type expectedWarning struct {
+	lineNum int
+	line    string
+}
+
 func Test_parseUserRules(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]struct {
-		content          string
-		expectedRules    []userRule
-		expectedWarnings int
+		content         string
+		expectedRules   []userRule
+		expectedWarning *expectedWarning
 	}{
 		"single_rule": {
 			content: "nft add table x",
@@ -48,14 +55,20 @@ func Test_parseUserRules(t *testing.T) {
 			},
 		},
 		"non_nft_warned": {
-			content:          "echo hello\nnft add table x",
-			expectedRules:    []userRule{{lineNum: 2, line: "nft add table x", args: []string{"add", "table", "x"}}},
-			expectedWarnings: 1,
+			content:       "echo hello\nnft add table x",
+			expectedRules: []userRule{{lineNum: 2, line: "nft add table x", args: []string{"add", "table", "x"}}},
+			expectedWarning: &expectedWarning{
+				lineNum: 1,
+				line:    "echo hello",
+			},
 		},
 		"nftables_prefix_warned": {
-			content:          "nftables foo",
-			expectedRules:    nil,
-			expectedWarnings: 1,
+			content:       "nftables foo",
+			expectedRules: nil,
+			expectedWarning: &expectedWarning{
+				lineNum: 1,
+				line:    "nftables foo",
+			},
 		},
 		"tab_after_nft": {
 			content: "nft\tadd table x",
@@ -80,7 +93,13 @@ func Test_parseUserRules(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockLogger := NewMockLogger(ctrl)
-			mockLogger.EXPECT().Warnf(gomock.Any(), gomock.Any()).Times(testCase.expectedWarnings)
+			if testCase.expectedWarning != nil {
+				mockLogger.EXPECT().Warnf(
+					gomock.Eq("line %d: skipping unrecognized command (expected nft): %s"),
+					gomock.Eq(testCase.expectedWarning.lineNum),
+					gomock.Eq(testCase.expectedWarning.line),
+				)
+			}
 
 			rules := parseUserRules([]byte(testCase.content), mockLogger)
 
@@ -168,7 +187,9 @@ func Test_RunUserPostRules(t *testing.T) {
 			}
 
 			if testCase.expectRestore {
-				// Restore phase: no saved tables, just a flush.
+				// Restore phase: no tables present (saved or created), just a
+				// listing and a flush.
+				mockConn.EXPECT().ListTables().Return(nil, nil)
 				mockConn.EXPECT().Flush().Return(nil)
 			}
 

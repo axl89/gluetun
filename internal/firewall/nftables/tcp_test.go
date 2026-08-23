@@ -68,7 +68,7 @@ func Test_TempDropOutputTCPRST_add(t *testing.T) {
 			mockConn := NewMockConn(ctrl)
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
-			expectNewFilterTable(mockConn)
+			expectNewGluetunTable(mockConn)
 
 			var addedRule *nftables.Rule
 			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
@@ -137,7 +137,7 @@ func Test_TempDropOutputTCPRST_revert(t *testing.T) {
 			f := &Firewall{dialFunc: func() (conn, error) { return mockConn, nil }}
 
 			// Add phase: create the filter table and the RST rule.
-			expectNewFilterTable(mockConn)
+			expectNewGluetunTable(mockConn)
 			mockConn.EXPECT().AddRule(gomock.Any()).DoAndReturn(func(rule *nftables.Rule) *nftables.Rule {
 				return rule
 			})

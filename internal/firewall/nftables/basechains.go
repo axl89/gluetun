@@ -14,7 +14,7 @@ import (
 var ErrPolicyUnknown = errors.New("unknown policy")
 
 // SetBaseChainsPolicy sets the policy of all the base chains (input, forward,
-// output) of the filter table to the given policy (accept or drop).
+// output) of the backend-owned table to the given policy (accept or drop).
 func (f *Firewall) SetBaseChainsPolicy(_ context.Context, policy string) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -29,8 +29,8 @@ func (f *Firewall) SetBaseChainsPolicy(_ context.Context, policy string) error {
 		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	if _, _, _, _, err = setupFilterWithBaseChains(conn, chainPolicy); err != nil {
-		return fmt.Errorf("setting up filter table: %w", err)
+	if _, _, _, _, err = setupBaseChains(conn, chainPolicy); err != nil {
+		return fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	if err := conn.Flush(); err != nil {

@@ -36,9 +36,9 @@ func (f *Firewall) TempDropOutputTCPRST(_ context.Context,
 		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	table, _, _, outputChain, err := setupFilterWithBaseChains(conn, nil)
+	table, _, _, outputChain, err := setupBaseChains(conn, nil)
 	if err != nil {
-		return nil, fmt.Errorf("setting up filter table: %w", err)
+		return nil, fmt.Errorf("setting up base chains: %w", err)
 	}
 
 	exprs := append(sourceIPExprs(src.Addr()), destinationIPExprs(dst.Addr())...)

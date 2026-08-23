@@ -96,6 +96,18 @@ func (mr *MockConnMockRecorder) DelRule(rule any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelRule", reflect.TypeOf((*MockConn)(nil).DelRule), rule)
 }
 
+// DelTable mocks base method.
+func (m *MockConn) DelTable(table *nftables.Table) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "DelTable", table)
+}
+
+// DelTable indicates an expected call of DelTable.
+func (mr *MockConnMockRecorder) DelTable(table any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelTable", reflect.TypeOf((*MockConn)(nil).DelTable), table)
+}
+
 // Flush mocks base method.
 func (m *MockConn) Flush() error {
 	m.ctrl.T.Helper()

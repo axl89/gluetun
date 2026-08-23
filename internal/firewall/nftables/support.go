@@ -67,7 +67,12 @@ func (f *Firewall) RunUserPostRules(ctx context.Context, filepath string) error 
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	restore, err := f.saveAndRestoreLocked()
+	conn, err := f.dialFunc()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
+	}
+
+	restore, err := f.saveAndRestoreLocked(conn)
 	if err != nil {
 		return fmt.Errorf("saving nftables state: %w", err)
 	}

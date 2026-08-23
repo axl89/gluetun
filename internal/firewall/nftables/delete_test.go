@@ -19,7 +19,7 @@ func testAcceptExprs() []expr.Any {
 func Test_deleteRule(t *testing.T) {
 	t.Parallel()
 
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
 	chain := &nftables.Chain{Name: inputChainName, Table: table}
 	exprs := testAcceptExprs()
 	rule := &nftables.Rule{Table: table, Chain: chain, Exprs: exprs}
@@ -224,7 +224,7 @@ func Test_untrackRule(t *testing.T) {
 func Test_addOrRemoveRule(t *testing.T) {
 	t.Parallel()
 
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: filterTableName}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: gluetunTableName}
 	chain := &nftables.Chain{Name: inputChainName, Table: table}
 	exprs := testAcceptExprs()
 	rule := &nftables.Rule{Table: table, Chain: chain, Exprs: exprs}
