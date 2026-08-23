@@ -17,7 +17,7 @@ func Test_filterData(t *testing.T) {
 	}{
 		"empty": {},
 		"unsupported_revision": {
-			cmdOutput:  "-A INPUT -j ACCEPT [unsupported revision]",
+			cmdOutput: "-A INPUT -j ACCEPT [unsupported revision]",
 			errMessage: "mismatch container iptables-save and kernel: " +
 				"-A INPUT -j ACCEPT [unsupported revision]",
 		},
