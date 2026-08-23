@@ -3,6 +3,7 @@ package firewall
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"time"
 )
 
@@ -25,15 +26,21 @@ import (
 func (c *Config) flushExistingConnections(ctx context.Context) {
 	tries := []struct {
 		name string
-		f    func(ctx context.Context) error
+		f    func(ctx context.Context, prefixes []netip.Prefix) error
 	}{
-		{name: "flushing conntrack", f: func(_ context.Context) error {
+		{name: "flushing conntrack", f: func(_ context.Context, _ []netip.Prefix) error {
 			return c.netlinker.FlushConntrack()
 		}},
 		{name: "marking and filtering unmarked packets", f: c.impl.AcceptOutputPublicOnlyNewTraffic},
 		{name: "rejecting connections for one second", f: c.rejectOutputTrafficTemporarily},
 		{name: "dropping connections for one second", f: c.dropOutputTrafficTemporarily},
 	}
+
+	localPrefixes := make([]netip.Prefix, 0, len(c.localNetworks))
+	for _, network := range c.localNetworks {
+		localPrefixes = append(localPrefixes, network.IPNet)
+	}
+
 	errs := make([]error, 0, len(tries))
 	firstTry := true
 	var previousTryName string
@@ -44,7 +51,7 @@ func (c *Config) flushExistingConnections(ctx context.Context) {
 				try.name, previousTryName, previousTryErr)
 		}
 		firstTry = false
-		err := try.f(ctx)
+		err := try.f(ctx, localPrefixes)
 		if err == nil {
 			return
 		}
@@ -56,12 +63,16 @@ func (c *Config) flushExistingConnections(ctx context.Context) {
 	c.logger.Warnf("flushing existing connections failed: %v", errs)
 }
 
-func (c *Config) rejectOutputTrafficTemporarily(ctx context.Context) error {
-	return setupThenRevert(ctx, c.impl.RejectOutputPublicTraffic)
+func (c *Config) rejectOutputTrafficTemporarily(ctx context.Context, localPrefixes []netip.Prefix) error {
+	return setupThenRevert(ctx, func(ctx context.Context, remove bool) error {
+		return c.impl.RejectOutputPublicTraffic(ctx, localPrefixes, remove)
+	})
 }
 
-func (c *Config) dropOutputTrafficTemporarily(ctx context.Context) error {
-	return setupThenRevert(ctx, c.impl.DropOutputPublicTraffic)
+func (c *Config) dropOutputTrafficTemporarily(ctx context.Context, localPrefixes []netip.Prefix) error {
+	return setupThenRevert(ctx, func(ctx context.Context, remove bool) error {
+		return c.impl.DropOutputPublicTraffic(ctx, localPrefixes, remove)
+	})
 }
 
 // setupThenRevert is a helper function to run a setup function that takes a remove boolean argument,

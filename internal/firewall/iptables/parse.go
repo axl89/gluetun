@@ -285,11 +285,11 @@ func parseMatchModule(fields []string, instruction *iptablesInstruction) (
 	_ = fields[consumed] // -m or --match flag already detected
 	consumed++
 	switch fields[consumed] {
-	case "tcp", "udp":
+	case "tcp", "udp", "conntrack":
 		consumed++
-		// for now ignore the protocol match since it's auto-loaded
-		// when parsing the -p/--protocol flag, and we don't need to
-		// parse it twice.
+		// for now ignore the protocol and conntrack matches since they are
+		// auto-loaded when parsing the -p/--protocol and --ctstate flags,
+		// and we don't need to parse them twice.
 	case "mark":
 		consumed++
 		switch {
@@ -305,16 +305,31 @@ func parseMatchModule(fields []string, instruction *iptablesInstruction) (
 		}
 	case "connmark":
 		consumed++
-		switch {
-		case len(fields[consumed:]) == 0 || strings.HasPrefix(fields[consumed], "-"):
-			// end or another flag
-			return consumed, nil
-		case fields[consumed] == "!":
+		if len(fields[consumed:]) > 0 && fields[consumed] == "!" {
 			consumed++
 			instruction.connMark.invert = true
+		}
+		switch {
+		case len(fields[consumed:]) == 0:
+			// end of rule, no mark value
+			return consumed, nil
+		case fields[consumed] == "--mark":
+			consumed++
+			if len(fields[consumed:]) == 0 {
+				return consumed, fmt.Errorf("iptables command is malformed: connmark --mark requires a value")
+			}
+			n, err := parseAny32bNumber(fields[consumed])
+			if err != nil {
+				return consumed, fmt.Errorf("parsing connmark mark value %q: %w", fields[consumed], err)
+			}
+			instruction.connMark.value = n
+			consumed++
+		case strings.HasPrefix(fields[consumed], "-"):
+			// another flag, no mark value
+			return consumed, nil
 		default:
 			return consumed, fmt.Errorf("iptables command is malformed: unsupported match connmark with value: %s",
-				fields[2])
+				fields[consumed])
 		}
 	default:
 		return 0, fmt.Errorf("iptables command is malformed: unknown match value: %s",

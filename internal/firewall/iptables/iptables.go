@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/qdm12/gluetun/internal/models"
@@ -158,8 +159,12 @@ const publicOnlyChainName = "GLUETUN_PUBLIC_ONLY"
 // established or related packets with this mark only. This effectively forces
 // previously established or related traffic to be blocked, which is used as a fallback
 // to kill the existing connections when the conntrack tables cannot be flushed.
-func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context) error {
-	ipv4Instructions, ipv6Instructions := makeCreatePublicIPChainInstructions()
+// The localPrefixes are added to the exceptions, so that existing connections to
+// the local networks are not blocked.
+func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context,
+	localPrefixes []netip.Prefix,
+) error {
+	ipv4Instructions, ipv6Instructions := makeCreatePublicIPChainInstructions(localPrefixes)
 	appendToBoth := func(instruction string) {
 		ipv4Instructions = append(ipv4Instructions, instruction)
 		ipv6Instructions = append(ipv6Instructions, instruction)
@@ -199,15 +204,21 @@ func (c *Config) AcceptOutputPublicOnlyNewTraffic(ctx context.Context) error {
 	return nil
 }
 
-func (c *Config) RejectOutputPublicTraffic(ctx context.Context, remove bool) error {
-	return c.targetOutputPublicTraffic(ctx, "REJECT", remove)
+func (c *Config) RejectOutputPublicTraffic(ctx context.Context,
+	localPrefixes []netip.Prefix, remove bool,
+) error {
+	return c.targetOutputPublicTraffic(ctx, "REJECT", localPrefixes, remove)
 }
 
-func (c *Config) DropOutputPublicTraffic(ctx context.Context, remove bool) error {
-	return c.targetOutputPublicTraffic(ctx, "DROP", remove)
+func (c *Config) DropOutputPublicTraffic(ctx context.Context,
+	localPrefixes []netip.Prefix, remove bool,
+) error {
+	return c.targetOutputPublicTraffic(ctx, "DROP", localPrefixes, remove)
 }
 
-func (c *Config) targetOutputPublicTraffic(ctx context.Context, target string, remove bool) error {
+func (c *Config) targetOutputPublicTraffic(ctx context.Context,
+	target string, localPrefixes []netip.Prefix, remove bool,
+) error {
 	removeInstructions := []string{
 		"-D OUTPUT -j " + publicOnlyChainName,
 		"-F " + publicOnlyChainName,
@@ -256,7 +267,9 @@ func (c *Config) targetOutputPublicTraffic(ctx context.Context, target string, r
 	return nil
 }
 
-func makeCreatePublicIPChainInstructions() (ipv4Instructions, ipv6Instructions []string) {
+func makeCreatePublicIPChainInstructions(localPrefixes []netip.Prefix) (
+	ipv4Instructions, ipv6Instructions []string,
+) {
 	ipv4PrivatePrefixes := []netip.Prefix{
 		netip.MustParsePrefix("10.0.0.0/8"),
 		netip.MustParsePrefix("172.16.0.0/12"),
@@ -267,6 +280,18 @@ func makeCreatePublicIPChainInstructions() (ipv4Instructions, ipv6Instructions [
 		netip.MustParsePrefix("fc00::/7"),
 		netip.MustParsePrefix("fe80::/10"),
 		netip.MustParsePrefix("::1/128"),
+	}
+
+	// Add the configured local network prefixes to the exceptions, since
+	// they can be globally routed (notably IPv6 local networks), and we
+	// do not want to block the existing connections to them.
+	for _, prefix := range localPrefixes {
+		switch {
+		case prefix.Addr().Is4() && !slices.Contains(ipv4PrivatePrefixes, prefix):
+			ipv4PrivatePrefixes = append(ipv4PrivatePrefixes, prefix)
+		case prefix.Addr().Is6() && !slices.Contains(ipv6PrivatePrefixes, prefix):
+			ipv6PrivatePrefixes = append(ipv6PrivatePrefixes, prefix)
+		}
 	}
 
 	ipv4Instructions = append(ipv4Instructions, "-N "+publicOnlyChainName)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/qdm12/gluetun/internal/routing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,8 +35,9 @@ type testImpl struct {
 	rejectTrafficErr    error
 	dropTrafficErr      error
 
-	mu    sync.Mutex
-	calls []string
+	mu            sync.Mutex
+	calls         []string
+	localPrefixes []netip.Prefix
 }
 
 func (m *testImpl) record(call string) {
@@ -49,17 +52,32 @@ func (m *testImpl) callsSnapshot() []string {
 	return slices.Clone(m.calls)
 }
 
-func (m *testImpl) AcceptOutputPublicOnlyNewTraffic(_ context.Context) error {
+func (m *testImpl) AcceptOutputPublicOnlyNewTraffic(_ context.Context,
+	localPrefixes []netip.Prefix,
+) error {
+	m.mu.Lock()
+	m.localPrefixes = localPrefixes
+	m.mu.Unlock()
 	m.record("accept-new-traffic")
 	return m.acceptNewTrafficErr
 }
 
-func (m *testImpl) RejectOutputPublicTraffic(_ context.Context, remove bool) error {
+func (m *testImpl) RejectOutputPublicTraffic(_ context.Context,
+	localPrefixes []netip.Prefix, remove bool,
+) error {
+	m.mu.Lock()
+	m.localPrefixes = localPrefixes
+	m.mu.Unlock()
 	m.record(fmt.Sprintf("reject-traffic-%t", remove))
 	return m.rejectTrafficErr
 }
 
-func (m *testImpl) DropOutputPublicTraffic(_ context.Context, remove bool) error {
+func (m *testImpl) DropOutputPublicTraffic(_ context.Context,
+	localPrefixes []netip.Prefix, remove bool,
+) error {
+	m.mu.Lock()
+	m.localPrefixes = localPrefixes
+	m.mu.Unlock()
 	m.record(fmt.Sprintf("drop-traffic-%t", remove))
 	return m.dropTrafficErr
 }
@@ -103,6 +121,7 @@ func Test_flushExistingConnections(t *testing.T) {
 		acceptNewTrafficErr error
 		rejectTrafficErr    error
 		dropTrafficErr      error
+		localNetworks       []routing.LocalNetwork
 
 		expectedCalls          []string
 		expectedFallbackDebugs int
@@ -117,13 +136,19 @@ func Test_flushExistingConnections(t *testing.T) {
 		// probe may have succeeded (see https://github.com/qdm12/gluetun/issues/3152).
 		// The fallback to the iptables-based methods must still kick in.
 		"flush conntrack fails with raw netlink error": {
-			flushConntrackErr:      errors.New("querying netlink request: netlink receive: invalid argument"),
+			flushConntrackErr: errors.New("querying netlink request: netlink receive: invalid argument"),
+			localNetworks: []routing.LocalNetwork{
+				{IPNet: netip.MustParsePrefix("192.168.1.0/24"), InterfaceName: "eth0"},
+				// Globally routed local network (not a private prefix).
+				{IPNet: netip.MustParsePrefix("2001:db8:abcd::/48"), InterfaceName: "eth0"},
+			},
 			expectedCalls:          []string{"accept-new-traffic"},
 			expectedFallbackDebugs: 1,
 		},
 		"flush conntrack and accept-new-traffic fail, reject works": {
 			flushConntrackErr:   errors.New("querying netlink request: netlink receive: invalid argument"),
 			acceptNewTrafficErr: errors.New("missing kernel module: xt_connmark"),
+			localNetworks:       []routing.LocalNetwork{{IPNet: netip.MustParsePrefix("10.0.0.0/8")}},
 			expectedCalls: []string{
 				"accept-new-traffic",
 				"reject-traffic-false",
@@ -162,9 +187,10 @@ func Test_flushExistingConnections(t *testing.T) {
 			}
 			logger := &testLogger{}
 			config := &Config{
-				netlinker: netlinker,
-				impl:      impl,
-				logger:    logger,
+				netlinker:     netlinker,
+				impl:          impl,
+				logger:        logger,
+				localNetworks: testCase.localNetworks,
 			}
 
 			// Must not fail, no matter what the tries return.
@@ -174,6 +200,15 @@ func Test_flushExistingConnections(t *testing.T) {
 			require.Equal(t, 1, netlinker.flushConntrackCalls)
 
 			assert.ElementsMatch(t, testCase.expectedCalls, impl.callsSnapshot())
+
+			// The local network prefixes are passed to the iptables fallbacks.
+			if len(testCase.localNetworks) > 0 && len(testCase.expectedCalls) > 0 {
+				expectedPrefixes := make([]netip.Prefix, 0, len(testCase.localNetworks))
+				for _, network := range testCase.localNetworks {
+					expectedPrefixes = append(expectedPrefixes, network.IPNet)
+				}
+				assert.Equal(t, expectedPrefixes, impl.localPrefixes)
+			}
 
 			warnings := logger.entriesContaining("warn", "")
 			if len(testCase.expectedWarnSubstr) == 0 {

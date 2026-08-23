@@ -36,8 +36,12 @@ func findHighestMSSDestination(ctx context.Context, familyToFD map[int]fileDescr
 		}(dst)
 	}
 
+	results := make([]result, 0, len(dsts))
 	for range dsts {
-		result := <-resultCh
+		results = append(results, <-resultCh)
+	}
+
+	for _, result := range results {
 		if result.err != nil {
 			missingMarkModule := errors.Is(result.err, iptables.ErrKernelModuleMissing) ||
 				errors.Is(result.err, iptables.ErrMarkMatchModuleMissing)
@@ -65,7 +69,10 @@ func findHighestMSSDestination(ctx context.Context, familyToFD map[int]fileDescr
 	}
 
 	if mss == 0 { // no MSS found for any destination
-		return netip.AddrPort{}, 0, fmt.Errorf("all %d TCP servers are unreachable", len(dsts))
+		if err != nil { // keep the module error, if any, over the generic one
+			return netip.AddrPort{}, 0, err
+		}
+		return netip.AddrPort{}, 0, fmt.Errorf("all %d TCP servers are unreachable", len(results))
 	}
 
 	maxPossibleMTU = ip.HeaderLength(dst.Addr().Is4()) + constants.BaseTCPHeaderLength + mss
