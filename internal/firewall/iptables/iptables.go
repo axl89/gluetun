@@ -241,6 +241,7 @@ func (c *Config) targetOutputPublicTraffic(ctx context.Context, target string, r
 		if strings.Contains(err.Error(), " support") {
 			return fmt.Errorf("%w: %w", ErrKernelModuleMissing, err)
 		}
+		return err
 	}
 
 	err = c.runIP6tablesInstructions(ctx, ipv6Instructions)
